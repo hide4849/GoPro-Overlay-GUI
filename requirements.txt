@@ -1,16 +1,52 @@
-# for drawing text/images
-pillow==11.3.0
-# pint for unit conversion
-pint==0.22
-# for drawing little map
-geotiler==0.15
-# for loading GPX files
-gpxpy==1.6.1
-# for loading FIT files
+# GoPro Overlay GUI tool
+# Python 3.14 用
+#
+# py -3.14 -m venv venv
+# venv\Scripts\activate
+# python -m pip install --upgrade pip setuptools wheel
+# pip install -r requirements.txt
+# py -m PyInstaller build.spec --clean
+# 
+# 
+# 
+# 
+# 
+
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.3
+aiosignal==1.4.0
+altgraph==0.17.5
+attrs==25.4.0
+certifi==2026.1.4
+charset-normalizer==3.4.4
+cytoolz==1.1.0
 fitdecode==0.10.0
-# for lat/lon/speed calcs
+flexcache==0.3
+flexparser==0.4
+frozenlist==1.8.0
 geographiclib==1.52
+geotiler==0.15.0
+gopro-overlay==0.129.0
+gpxpy==1.6.1
+idna==3.11
+multidict==6.7.1
+packaging==26.0
+pefile==2024.8.26
+pillow==11.3.0
+Pint==0.25.1
+platformdirs==4.9.2
 progressbar2==4.2.0
-requests==2.32.4
-pycairo==1.28.0
+propcache==0.4.1
+pyinstaller==6.19.0
+pyinstaller-hooks-contrib==2026.0
+python-utils==3.9.1
+pywin32-ctypes==0.2.3
+requests==2.32.5
+setuptools==80.10.2
 sqlitedict==2.1.0
+tkinterdnd2==0.4.3
+toolz==1.1.0
+typing_extensions==4.15.0
+urllib3==2.6.3
+wheel==0.46.3
+yarl==1.22.0

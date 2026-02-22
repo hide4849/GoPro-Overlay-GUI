@@ -1,228 +1,130 @@
-# Create video overlays from GoPro Videos or any GPX/FIT file
+[for English](README_EN.md)
 
-<a href="https://github.com/time4tea/gopro-dashboard-overlay/discussions"><img alt="GitHub Discussions" src="https://img.shields.io/github/discussions/time4tea/gopro-dashboard-overlay?style=for-the-badge"></a>
-<a href="https://pypi.org/project/gopro-overlay/"><img alt="PyPI" src="https://img.shields.io/pypi/v/gopro-overlay?style=for-the-badge"></a>
-<a href="https://hub.docker.com/r/overlaydash/gopro-dashboard-overlay"><img alt="Docker" src="https://img.shields.io/docker/v/overlaydash/gopro-dashboard-overlay?label=Docker&style=for-the-badge"></a>
+# GoPro Overlay GUI Tool
 
-Discuss on [GitHub Discussions](https://github.com/time4tea/gopro-dashboard-overlay/discussions)
+GoProのテレメトリ（GPS/速度など）やダッシュボード風の情報を、動画にオーバーレイ（合成）するためのGUIツールです。  
+ドライブ映像用と360度映像用の機能を持たせています。
 
-- Overlaying exciting graphics onto GoPro videos with super-exact synchronization
-- Create videos from any GPX or FIT file - no GoPro required
-- Support multiple resolutions, most GoPro models, normal, timelapse & timewarp modes
-- Support GPUs to create movies at up to 17x realtime
-- Convert GoPro movie metadata to GPX or CSV files
-- Cut sections from GoPro movies (including metadata)
-- Linux, Mac, Windows!
+[time4tea](https://github.com/time4tea) さんの超素晴らしく超ありがたい [gopro-dashboard-overlay](https://github.com/time4tea/gopro-dashboard-overlay) をGUIで簡単に使えるようにしました。
 
-## Introduction Video
+このリポジトリは **GPL-3.0** で公開しています。`LICENSE` を参照してください。
 
-[![Intro Video](https://img.youtube.com/vi/qTwPVjNXJ8o/0.jpg)](https://www.youtube.com/watch?v=qTwPVjNXJ8o)
+<br>
+<br>
 
-## Examples
+## 使い方
+### ・ モード 『Merge + Overlay』
+長時間連続撮影を行うと、ファイルが自動的に分割されます。  
+時系列順にリストにMP4ファイルをD&Dすると、1本のMP4に結合し、GPSデータを合成します。
+![長時間動画用ソフト画面](doc/drec1.png "長時間動画用ソフト画面")  
+![ドラレコ映像](doc/drec2.png "ドラレコ映像")  
+<br>
 
-![Example Dashboard Image](examples/2022-05-15-example.png)
-![Example Dashboard Image](examples/2022-06-11-contrib-example.png)
-![Example Dashboard Image](examples/2022-07-19-contrib-example-plane.jpg)
-![Example Dashboard Image](examples/2023-07-23-contrib-example-ski-pov.png)
-![Example Dashboard Image](examples/2023-07-23-contrib-example-ski-drone.png)
-
-An Example of 'overlay only' mode, which generates movies from GPX files
-![Example Dashboard Image](examples/2022-11-24-gpx-only-overlay.png)
-
-Example from [examples/layout](examples/layout)
-![Example Dashboard Image](examples/layout/layout-cairo-2704x1520.png)
-
-## Map Styles
-
-Almost 30 different map styles are supported! - See [map styles](docs/maps/README.md) for more
-
-*Example*
-
-| .                                   | .                                             | .                                                     | .                                                     |
-|-------------------------------------|-----------------------------------------------|-------------------------------------------------------|-------------------------------------------------------|
-| ![osm](docs/maps/map_style_osm.png) | ![tf-cycle](docs/maps/map_style_tf-cycle.png) | ![tf-transport](docs/maps/map_style_tf-transport.png) | ![tf-landscape](docs/maps/map_style_tf-landscape.png) |
+### ・ モード 『Batch Overlay』
+360度動画用のモードです。  
+GoProPlayer等でキーフレームを設定し、4Kで出力します。  
+出力はカットなしのフル尺でしてください、GPS情報と動画がズレる恐れがあるかもしれません。  
+GPSデータ読み込みのため、出力された.MP4と元の.360ファイルの両方をD&Dしてください。  
+複数セットのバッチ処理が可能です。
+![360度動画用ソフト画面](doc/3601.png "360度動画用ソフト画面")
+![360度出力動画](doc/3602.png "360度出力動画")
+<br>
 
 
-## Requirements
-
-- Python3.10 (development is done on Python3.11)
-- ffmpeg (you'll need the ffmpeg program installed)
-- libraqm (needed by [Pillow](https://pypi.org/project/Pillow/))
-
-## Installation
-
-For Windows, please see docs [docs/windows.md](docs/windows.md)
-
-For Docker, please see docs at [docs/docker.md](docs/docker.md)
-
-Install locally using `pip`, or use the provided Docker image
-
-Optional: Some widgets require the `cairo` library - which must be installed separately.
+### ・ エンコーダの選択
+3パターンから選択できます。  
+・ソフトウェアエンコード  
+・インテルHWエンコード  
+・nVIDIA HWエンコード
+<br>
 
 
-### Installing and running with pip
+### ・ 出力解像度
+4Kと2Kが選択できます。
+4Kを選択すると1080pへのトランスコード工程がスキップできます。  
+が、オーバーレイ処理に時間がかかります。
+<br>
 
-```shell
-python -m venv venv
-venv/bin/pip install gopro-overlay
+
+### ・ タイムラプス
+長時間のドライブ映像用にx5、x10が選択できます。  
+x1がタイムラプスなしです。
+<br>
+
+
+### ・ 中間ファイル削除
+これにチェックを入れると、完了後に不要な中間ファイルが削除されます。
+<br>
+
+## 構成
+
+- `gopro_overlay_GUI.py` — メインのGUIツール
+- `build.spec` — PyInstaller でスタンドアロン実行ファイルを作るための spec
+- `requirements.txt` — Python依存パッケージ一覧
+- `third_party/` — 同梱しているサードパーティ（FFmpeg、Robotoフォント、gopro-dashboard など）
+
+サードパーティのライセンス詳細は `THIRD_PARTY_NOTICES.md` を参照してください。
+
+<br>
+<br>
+
+## 必要環境
+
+- Windows 10/11（推奨）
+- Python 3.14 で確認
+- FFmpeg は `third_party/ffmpeg/` に同梱しています（`ffmpeg.exe` / `ffprobe.exe`）
+
+<br>
+<br>
+
+## EXEのビルド（PyInstaller）
+
+仮想環境の準備：
+```bash
+py -3.14 -m venv venv
+venv\Scripts\activate
 ```
-
-The Roboto font needs to be installed on your system. You could install it with one of the following commands maybe.
+依存パッケージをインストール：
 
 ```bash
-pacman -S ttf-roboto
-apt install truetype-roboto
-apt install fonts-roboto
+pip install -r requirements.txt
 ```
 
-#### (Optional) Installing pycairo
+同梱の spec を使ってビルド：
 
-Optionally, install `pycairo`
-
-```shell
-venv/bin/pip install pycairo==1.23.0
+```bash
+pyinstaller build.spec
 ```
 
-You might need to install some system libraries - This is what the pycairo docs suggest: 
+出力は `dist/` 配下に生成されます（フォルダ名は spec の内容に依存します）。
 
-Ubuntu/Debian: `sudo apt install libcairo2-dev pkg-config python3-dev`
+> 補足:
+> - この`build.spec`は `third_party/` 配下の同梱物（FFmpeg、フォント等）を参照しビルドしています。
+> - パスを変更した場合は `build.spec` 側も合わせて修正してください。
 
-macOS/Homebrew: `brew install cairo pkg-config`
+<br>
+<br>
 
-### Example
+## クレジット / サードパーティ
 
-For full instructions on all command lines see [docs/bin](docs/bin)
+同梱コンポーネント：
 
-```shell
-venv/bin/gopro-dashboard.py --gpx ~/Downloads/Morning_Ride.gpx --privacy 52.000,-0.40000,0.50 ~/gopro/GH020073.MP4 GH020073-dashboard.MP4
-```
+- **FFmpeg / FFprobe** — Windowsビルドの再配布（`third_party/ffmpeg/`）
+本リポジトリは Windows向けの FFmpeg バイナリを以下に同梱しています。
+`third_party/ffmpeg/ffmpeg.exe`
+`third_party/ffmpeg/ffprobe.exe`  
+これらは [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) のビルドを再配布しています  
+詳細は `third_party/ffmpeg/LICENSE` と `third_party/ffmpeg/README.txt` を参照してください。  
 
-## Caveats
+- **Roboto フォント** — `googlefonts/roboto-3-classic`（OFL-1.1、`third_party/Roboto/`）  
 
-The GPS track in Hero 9 seems to be very poor. If you supply a GPX file from a Garmin or whatever, the
-program will use this instead for the GPS. Hero 11 GPS is much improved.
+- **gopro-dashboard overlay script** — `time4tea/gopro-dashboard-overlay` から未改変で同梱（GPL-3.0、`third_party/gopro-dashboard/`）
+詳細は `THIRD_PARTY_NOTICES.md` を参照してください。
 
-Privacy allows you to set a privacy zone. Various widgets will not draw points within that zone.
+<br>
+<br>
 
-The data recorded in the GoPro video will uses GPS time, which (broadly) is UTC. The renderer will use your local
-timezone to interpret this, and use the local timezone. This may produce strange results if you go on holiday somewhere,
-but then render the files when you get back home! On linux you can use the TZ variable to change the timezone that's
-used.
+## ライセンス
 
-## Writeups
-
-There's a great writeup of how to use the software to make an overlay from a GPX file at https://blog.cubieserver.de/2022/creating-gpx-overlay-videos-on-linux/
-(Nov 2022)
-
-### Format of the Dashboard Configuration file
-
-Several dashboards are built-in to the software, but the dashboard layout is highly configurable, controlled by an XML
-file.
-
-For more information on the (extensive) configurability of the layout please see [docs/xml](docs/xml) and lots
-of [examples](docs/xml/examples/README.md)
-
-## FFMPEG Control & GPUs
-
-FFMPEG has **a lot** of options! This program comes with some mostly sensible defaults, but to use GPUs and control the
-output much more carefully, including framerates and bitrates, you can use a JSON file containing a number of 'profiles'
-and select the profile you want when running the program.
-
-For more details on how to select these, and an example of Nvidia GPU, please see the guide in [docs/bin#ffmpeg-profiles](docs/bin#ffmpeg-profiles)
-
-Please also see other docs [PERFORMANCE.md](PERFORMANCE.md) and [docs/bin/PERFORMANCE_GUIDE.md](docs/bin/PERFORMANCE_GUIDE.md)
-
-## Converting to GPX files
-
-```shell
-venv/bin/gopro-to-gpx.py <input-file> [output-file]
-```
-
-## Joining a sequence of MP4 files together
-
-Use the gopro-join.py command. Given a single file from the sequence, it will find and join together all the files. If
-you have any problems with this, please do raise an issue - I don't have that much test data.
-
-The joined file almost certainly won't work in the GoPro tools! - But it should work with `gopro-dashboard.py` - I will
-look into the additional technical stuff required to make it work in the GoPro tools.
-
-*This will require a lot of disk space!*
-
-```shell
-venv/bin/gopro-join.py /media/sdcard/DCIM/100GOPRO/GH030170.MP4 /data/gopro/nice-ride.MP4
-```
-
-## Cutting a section from a GoPro file
-
-You can cut a section of the gopro file, with metadata.
-
-
-## Help Wanted
-
-- Adding additional graphics widgets, ideally using cairo.
-- Validation / Improvement of smoothing - e.g. Kalman Filters
-- Suggestions for handling acceleration and orientation data, this is parsed, but display options are few.
-
-## Work In Progress
-
-- Adding min/max/moving averages to metrics
-
-## Related Software
-
-- https://github.com/julesgraus/interactiveGoProDashboardTool - An interactive helper to build the command line for the dashboard program
-
-## Known Bugs / Issues
-
-- Only tested on a GoPro Hero 9/11, that's all I have. Sample files for other devices are welcomed.
-
-## Icons
-
-Icon files in [icons](gopro_overlay/icons) are not covered by the MIT licence
-
-## Map Data
-
-Data © [OpenStreetMap contributors](http://www.openstreetmap.org/copyright)
-
-Some Maps © [Thunderforest](http://www.thunderforest.com/)
-
-## References
-
-https://github.com/juanmcasillas/gopro2gpx
-
-https://github.com/JuanIrache/gopro-telemetry
-
-https://github.com/gopro/gpmf-parser
-
-https://coderunner.io/how-to-compress-gopro-movies-and-keep-metadata/
-
-## Other Related Software
-
-https://github.com/progweb/gpx2video
-
-https://github.com/JuanIrache/gopro-telemetry
-
-## Latest Changes
-
-If you find any issues with new releases, please discuss in [GitHub Discussions](https://github.com/time4tea/gopro-dashboard-overlay/discussions)
-- 0.129.0 [Enhancement] [Breaking] - Update python compatibility - Newly Compatible: 3.13, 3.14. No longer compatible 3.9, 3.10 
-- 0.128.0 [Enhancement] add layout default compatible ith DJI 2.5k resolution. Thanks to [@DonkeyShine](https://github.com/DonkeyShine) for suggestion.
-- 0.127.0 [Enhancement] Now support _respiration_ , _front_gear_num_ and _rear_gear_num fields in FIT files. Improved support for using DJI videos as files to be overlaid. 
-  - Thanks to [@prebbz](https://github.com/prebbz) [@DonkeyShine](https://github.com/DonkeyShine) 
-- 0.126.0 [Enhancement] New Motorspeed widgets - "msi" & "msi2" - See examples [docs/xml/examples/07-motor-speed-indicator/README.md](docs/xml/examples/07-motor-speed-indicator/README.md) - Thanks to [@JimmyS83](https://github.com/JimmyS83) for contributing.
-  - New metric `accel` which is computed from speed deltas, rather than gopro accelerometer. Thanks also to [@JimmyS83](https://github.com/JimmyS83)
-  - [Breaking] Ordering of fields in gopro-to-csv has changed, with addition of `accel` field
-- 0.125.0 [Fix] Improved error messages with invalid font sizes. Thanks [@dyk74](https://github.com/dyk74) for raising.
-- 0.124.0 [Enhancement] Attempt to work around some GPS Issues, particularly https://github.com/time4tea/gopro-dashboard-overlay/issues/141 https://github.com/time4tea/gopro-dashboard-overlay/issues/22
-- 0.123.0 [Enhancement] Use better (but every so slightly slower, shouldn't make a huge difference) rotation method for maps - will give much better quality.
-  - Add new gauge - `cairo-gauge-donut` see [docs/xml](docs/xml/examples/06-cairo-gauge-donut)
-  - It looks like this: ![](docs/xml/examples/06-cairo-gauge-donut/06-cairo-gauge-donut-6.png)
-- 0.122.0 [Breaking] Previous change announced in v0.100.0 wasn't actually taking effect. Use --gpx-merge OVERWRITE to prefer values in gpx to gopro.
-- 0.121.0 [Enhancement] Build in some simple ffmpeg profiles - `nvgpu`, `nnvgpu`, `mov`, `vp8`, and `vp9` - see [docs/bin#ffmpeg-profiles](docs/bin#ffmpeg-profiles)
-- 0.120.0 [Fix] Resolve some Python3.10 compatibility issues. Thanks, [@KyleGW](https://github.com/KyleGW)
-- 0.119.0 [PyPI Changes Only] Update README in PyPI so links should work
-- 0.118.0 [Enhancement] Local Map Tiles are now cached in memory, so hugely more performant (affects `--map-style local` only)
-- 0.117.0 [Enhancements] Tentative support for Python 3.12. Thanks to [@JimmyS83](https://github.com/JimmyS83) for the suggestion. Also some small bugfixes for waiting for ffmpeg, and also hopefully removing error message about shared memory using `--double-buffer`
-- 0.116.0 [Docker Changes Only] Support GPU in docker image. See [docs/docker.md](docs/docker.md) Thanks to [@danielgv93](https://github.com/danielgv93) for suggestion.
-
-Older changes are in [CHANGELOG.md](CHANGELOG.md)
-
+- 本プロジェクト：**GPL-3.0**（`LICENSE`）
+- サードパーティ：`THIRD_PARTY_NOTICES.md` および `third_party/` 配下の各ライセンスファイルを参照してください。
