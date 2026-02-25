@@ -9,6 +9,21 @@ import tempfile
 import subprocess
 import webbrowser
 from pathlib import Path
+
+# --- Tk/Tcl init guard (PyInstaller on macOS) ---
+os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
+if getattr(sys, "frozen", False) and sys.platform == "darwin":
+    _base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+    _tcl = os.path.join(_base, "_tcl_data")
+    _tk  = os.path.join(_base, "_tk_data")
+    if os.path.isdir(_tcl):
+        os.environ.setdefault("TCL_LIBRARY", _tcl)
+    if os.path.isdir(_tk):
+        os.environ.setdefault("TK_LIBRARY", _tk)
+
+IS_WIN = (os.name == "nt")
+IS_MAC = (sys.platform == "darwin")
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -21,12 +36,16 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_TITLE = "GoPro Overlay GUI Tool v1.0"
+APP_TITLE = "GoPro Overlay GUI Tool v1.1"
 DEFAULT_WIDTH_2K = 1920
 
 # --- Encode settings ---
 X264_PRESET = "veryfast"
 X264_CRF = "22"
+
+# Apple macOS hardware (VideoToolbox)
+VT_Q = "55"
+VT_BITRATE = "7000k"
 
 # nVIDIA NVENC
 NVENC_PRESET = "p5"
@@ -59,9 +78,24 @@ def rpath(rel: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
     return base / rel
 
-ASSET_FFMPEG  = rpath("ffmpeg.exe")
-ASSET_FFPROBE = rpath("ffprobe.exe")
-ASSET_FONT    = rpath("Roboto-Regular.ttf")
+# ffmpeg / ffprobe のファイル名をOSで切替
+ASSET_FFMPEG  = rpath("ffmpeg.exe"  if IS_WIN else "ffmpeg")
+ASSET_FFPROBE = rpath("ffprobe.exe" if IS_WIN else "ffprobe")
+
+# macOS: もし同梱バイナリが無ければ PATH の ffmpeg/ffprobe を使う（開発時の実行用）
+if not IS_WIN:
+    import shutil as _shutil
+    if not ASSET_FFMPEG.exists():
+        p = _shutil.which("ffmpeg")
+        if p:
+            ASSET_FFMPEG = Path(p)
+    if not ASSET_FFPROBE.exists():
+        p = _shutil.which("ffprobe")
+        if p:
+            ASSET_FFPROBE = Path(p)
+
+# Font (common: Roboto)
+ASSET_FONT    = rpath("third_party/Roboto/Roboto-Regular.ttf")
 DASHBOARD_PY  = rpath("gopro-dashboard.py")
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -109,7 +143,9 @@ def ensure_naked_binaries(log=None):
                 log(f"Created naked binary: {dst.name}")
 
 
-def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool]:
+
+def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool, bool]:
+    """Detect availability of H.264 hardware encoders."""
     p = subprocess.run(
         [str(ffmpeg), "-hide_banner", "-encoders"],
         stdout=subprocess.PIPE,
@@ -118,7 +154,10 @@ def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool]:
         creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     txt = p.stdout or ""
-    return ("h264_nvenc" in txt), ("h264_qsv" in txt)
+    av_nvenc = ("h264_nvenc" in txt)
+    av_qsv = ("h264_qsv" in txt)
+    av_vt = ("h264_videotoolbox" in txt)
+    return av_nvenc, av_qsv, av_vt
 
 
 def parse_drop_files(data: str) -> list[Path]:
@@ -226,7 +265,7 @@ class _LogStream:
 # =============================
 # Command runner (progress)
 # =============================
-def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None):
+def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, progress_time_scale: float = 1.0):
     log(f"\nCMD>> {' '.join(str(x) for x in cmd)}\n")
 
     # total duration estimation (best effort)
@@ -283,8 +322,10 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None):
                 m = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", part)
                 if m and total_sec:
                     h, m_, s = m.groups()
-                    current_sec = int(h) * 3600 + int(m_) * 60 + float(s)
+                    current_sec_raw = int(h) * 3600 + int(m_) * 60 + float(s)
+                    current_sec = current_sec_raw * float(progress_time_scale)
                     percent = int((current_sec / total_sec) * 100)
+                    percent = max(0, min(100, percent))
 
                     time_str = f"{int(h):02d}:{int(m_):02d}:{float(s):05.2f}"
 
@@ -401,14 +442,18 @@ class App(TkinterDnD.Tk):
         self.ffprobe = ASSET_FFPROBE
 
         # Detect encoders
-        self.av_nvenc, self.av_qsv = detect_hw_encoders(self.ffmpeg)
+        self.av_nvenc, self.av_qsv, self.av_vt = detect_hw_encoders(self.ffmpeg)
 
         # Shared options
         default_enc = "cpu"
-        if self.av_qsv:
-            default_enc = "qsv"
-        elif self.av_nvenc:
-            default_enc = "nvenc"
+        if IS_MAC:
+            if self.av_vt:
+                default_enc = "vt"
+        else:
+            if self.av_qsv:
+                default_enc = "qsv"
+            elif self.av_nvenc:
+                default_enc = "nvenc"
         self.encoder_var = tk.StringVar(value=default_enc)
         self.resolution_var = tk.StringVar(value="2k")  # default 2K
 
@@ -431,7 +476,12 @@ class App(TkinterDnD.Tk):
         self.pair_map: dict[str, tuple[Path, Path]] = {}
 
         # Output dir
-        self.out_dir = tk.StringVar(value=str(Path.cwd()))
+        default_out = Path.cwd()
+        if IS_MAC:
+            desk = Path.home() / "Desktop"
+            if desk.exists():
+                default_out = desk
+        self.out_dir = tk.StringVar(value=str(default_out))
 
         # Threading / stop
         self.stop_event = threading.Event()
@@ -500,16 +550,23 @@ class App(TkinterDnD.Tk):
         enc.grid(row=0, column=0, sticky="nw", padx=(0, 10))
 
         rb_cpu = ttk.Radiobutton(enc, text="Software", variable=self.encoder_var, value="cpu")
-        rb_qsv = ttk.Radiobutton(enc, text="Intel QSV", variable=self.encoder_var, value="qsv")
-        rb_nv  = ttk.Radiobutton(enc, text="nVIDIA NVENC", variable=self.encoder_var, value="nvenc")
         rb_cpu.pack(anchor="w", padx=10, pady=2)
-        rb_qsv.pack(anchor="w", padx=10, pady=2)
-        rb_nv.pack(anchor="w", padx=10, pady=2)
 
-        if not self.av_qsv:
-            rb_qsv.state(["disabled"])
-        if not self.av_nvenc:
-            rb_nv.state(["disabled"])
+        if IS_MAC:
+            rb_vt = ttk.Radiobutton(enc, text="Apple HW (VideoToolbox)", variable=self.encoder_var, value="vt")
+            rb_vt.pack(anchor="w", padx=10, pady=2)
+            if not self.av_vt:
+                rb_vt.state(["disabled"])
+        else:
+            rb_qsv = ttk.Radiobutton(enc, text="Intel QSV", variable=self.encoder_var, value="qsv")
+            rb_nv  = ttk.Radiobutton(enc, text="nVIDIA NVENC", variable=self.encoder_var, value="nvenc")
+            rb_qsv.pack(anchor="w", padx=10, pady=2)
+            rb_nv.pack(anchor="w", padx=10, pady=2)
+
+            if not self.av_qsv:
+                rb_qsv.state(["disabled"])
+            if not self.av_nvenc:
+                rb_nv.state(["disabled"])
 
         # Resolution
         res = ttk.LabelFrame(opts_row, text="Output Resolution")
@@ -648,8 +705,8 @@ class App(TkinterDnD.Tk):
         frm = ttk.Frame(win, padding=12)
         frm.grid(row=0, column=0, sticky="nsew")
 
-        ttk.Label(frm, text="GoPro Overlay GUI Tool", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(frm, text="version 1.0").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text="GoPro Overlay GUI Tool", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(frm, text="version 1.1").grid(row=1, column=0, sticky="w")
         ttk.Label(frm, text="Copyright © 2026 by Hidenori Saka").grid(row=2, column=0, sticky="w")
 
         # Link-like style (blue + underline)
@@ -660,7 +717,7 @@ class App(TkinterDnD.Tk):
             pass
 
         url = "https://enpitusya.jp"
-        link = ttk.Label(frm, text=url, cursor="hand2", style="Link.TLabel", font=("Segoe UI", 9, "underline"))
+        link = ttk.Label(frm, text=url, cursor="hand2", style="Link.TLabel", font=("Segoe UI", 11, "underline"))
         link.grid(row=3, column=0, sticky="w", pady=(0, 8))
 
         def _open(_evt=None):
@@ -674,7 +731,7 @@ class App(TkinterDnD.Tk):
         ttk.Separator(frm).grid(row=4, column=0, sticky="ew", pady=8)
 
         ttk.Label(frm, text="gopro-dashboard-overlay: Copyright © by time4tea").grid(row=5, column=0, sticky="w")
-        ttk.Label(frm, text="FFmpeg: Build from www.gyan.dev").grid(row=6, column=0, sticky="w")
+        ttk.Label(frm, text=("FFmpeg: Build from evermeet.cx" if IS_MAC else "FFmpeg: Build from www.gyan.dev")).grid(row=6, column=0, sticky="w")
         ttk.Label(frm, text="ROBOTO: Copyright © 2011 The Roboto Project Authors").grid(row=7, column=0, sticky="w")
 
         btns = ttk.Frame(frm)
@@ -735,8 +792,39 @@ class App(TkinterDnD.Tk):
         tl_output = out_dir / f"{base_stem}_output_timelapse_x{tl_mode}.mp4"
         pts_factor = 1 / float(tl_mode)
 
-        enc = self.encoder_var.get()
-        use_nvenc = (enc == "nvenc" and self.av_nvenc)
+        mode = self.encoder_var.get()
+
+        # validate HW availability
+        if IS_MAC:
+            if mode == "vt" and not self.av_vt:
+                self.log(">> VideoToolbox not available; fallback to Software")
+                mode = "cpu"
+        else:
+            if mode == "nvenc" and not self.av_nvenc:
+                self.log(">> NVENC not available; fallback to Software")
+                mode = "cpu"
+            if mode == "qsv" and not self.av_qsv:
+                self.log(">> QSV not available; fallback to Software")
+                mode = "cpu"
+
+        def _run_vt(cmd_base):
+            try:
+                run_cmd(cmd_base + ["-c:v", "h264_videotoolbox", "-q:v", VT_Q, str(tl_output)],
+                        self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+            except Exception:
+                run_cmd(cmd_base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(tl_output)],
+                        self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+
+        def _run_win_hw(cmd_base):
+            if mode == "nvenc":
+                run_cmd(cmd_base + ["-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-cq", NVENC_CQ, str(tl_output)],
+                        self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+            elif mode == "qsv":
+                run_cmd(cmd_base + ["-c:v", "h264_qsv", "-global_quality", QSV_Q, str(tl_output)],
+                        self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+            else:
+                run_cmd(cmd_base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(tl_output)],
+                        self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
 
         if self._has_audio_stream(src_mp4):
             # atempo: 0.5〜2.0 制限 → 分割
@@ -748,37 +836,34 @@ class App(TkinterDnD.Tk):
             atempo_filters.append(f"atempo={remaining}")
             atempo_chain = ",".join(atempo_filters)
 
-            run_cmd([
+            base = [
                 str(self.ffmpeg), "-y",
                 "-i", str(src_mp4),
                 "-filter_complex",
                 f"[0:v]setpts={pts_factor}*PTS[v];[0:a]{atempo_chain}[a]",
                 "-map", "[v]",
                 "-map", "[a]",
-                "-c:v", "h264_nvenc" if use_nvenc else "libx264",
-                "-preset", NVENC_PRESET if use_nvenc else X264_PRESET,
-                "-cq" if use_nvenc else "-crf",
-                NVENC_CQ if use_nvenc else X264_CRF,
                 "-c:a", "aac",
                 "-b:a", "160k",
-                str(tl_output)
-            ], self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+            ]
+            if IS_MAC and mode == "vt":
+                _run_vt(base)
+            else:
+                _run_win_hw(base)
         else:
-            run_cmd([
+            base = [
                 str(self.ffmpeg), "-y",
                 "-i", str(src_mp4),
                 "-vf", f"setpts={pts_factor}*PTS",
                 "-an",
-                "-c:v", "h264_nvenc" if use_nvenc else "libx264",
-                "-preset", NVENC_PRESET if use_nvenc else X264_PRESET,
-                "-cq" if use_nvenc else "-crf",
-                NVENC_CQ if use_nvenc else X264_CRF,
-                str(tl_output)
-            ], self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+            ]
+            if IS_MAC and mode == "vt":
+                _run_vt(base)
+            else:
+                _run_win_hw(base)
 
         self.log(f"■ Timelapse Finish: {tl_output.name}")
         return tl_output
-
 
     def _cleanup_paths(self, paths):
         #Delete intermediate files when cleanup_var is enabled.
@@ -1031,14 +1116,36 @@ class App(TkinterDnD.Tk):
             vf = f"format=yuv420p,scale={DEFAULT_WIDTH_2K}:-2"
 
             mode = self.encoder_var.get()
-            if mode == "nvenc" and not self.av_nvenc:
-                self.log(">> NVENC not available; fallback to Software")
-                mode = "cpu"
-            if mode == "qsv" and not self.av_qsv:
-                self.log(">> QSV not available; fallback to Software")
-                mode = "cpu"
 
-            if mode == "nvenc":
+            # validate HW availability
+            if IS_MAC:
+                if mode == "vt" and not self.av_vt:
+                    self.log(">> VideoToolbox not available; fallback to Software")
+                    mode = "cpu"
+            else:
+                if mode == "nvenc" and not self.av_nvenc:
+                    self.log(">> NVENC not available; fallback to Software")
+                    mode = "cpu"
+                if mode == "qsv" and not self.av_qsv:
+                    self.log(">> QSV not available; fallback to Software")
+                    mode = "cpu"
+
+            if IS_MAC and mode == "vt":
+                base = [
+                    str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                    "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:d:0?",
+                    "-vf", vf,
+                    "-c:a", "copy",
+                    "-c:d", "copy",
+                ]
+                try:
+                    run_cmd(base + ["-c:v", "h264_videotoolbox", "-q:v", VT_Q, str(proxy_mp4)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+                except Exception:
+                    run_cmd(base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+
+            elif mode == "nvenc":
                 run_cmd([
                     str(self.ffmpeg), "-y", "-i", str(merged_mp4),
                     "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:d:0?",
@@ -1168,14 +1275,36 @@ class App(TkinterDnD.Tk):
             vf = f"format=yuv420p,scale={DEFAULT_WIDTH_2K}:-2"
 
             mode = self.encoder_var.get()
-            if mode == "nvenc" and not self.av_nvenc:
-                self.log(">> NVENC not available; fallback to Software")
-                mode = "cpu"
-            if mode == "qsv" and not self.av_qsv:
-                self.log(">> QSV not available; fallback to Software")
-                mode = "cpu"
 
-            if mode == "nvenc":
+            # validate HW availability
+            if IS_MAC:
+                if mode == "vt" and not self.av_vt:
+                    self.log(">> VideoToolbox not available; fallback to Software")
+                    mode = "cpu"
+            else:
+                if mode == "nvenc" and not self.av_nvenc:
+                    self.log(">> NVENC not available; fallback to Software")
+                    mode = "cpu"
+                if mode == "qsv" and not self.av_qsv:
+                    self.log(">> QSV not available; fallback to Software")
+                    mode = "cpu"
+
+            if IS_MAC and mode == "vt":
+                base = [
+                    str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                    "-map", "0:v:0", "-map", "0:a?", "-map", "0:d:0",
+                    "-vf", vf,
+                    "-c:a", "copy",
+                    "-c:d", "copy",
+                ]
+                try:
+                    run_cmd(base + ["-c:v", "h264_videotoolbox", "-q:v", VT_Q, str(proxy_mp4)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+                except Exception:
+                    run_cmd(base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+
+            elif mode == "nvenc":
                 run_cmd([
                     str(self.ffmpeg), "-y", "-i", str(merged_mp4),
                     "-map", "0:v:0", "-map", "0:a?", "-map", "0:d:0",

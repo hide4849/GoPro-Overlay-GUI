@@ -9,6 +9,8 @@ It includes features for both **drive videos** and **360° videos**.
 This project makes it easy to use the amazing and much-appreciated
 [time4tea](https://github.com/time4tea)’s [gopro-dashboard-overlay](https://github.com/time4tea/gopro-dashboard-overlay) from a GUI.
 
+Compatible with Windows / macOS.
+
 This repository is released under **GPL-3.0**. See `LICENSE`.
 
 <br>
@@ -38,7 +40,7 @@ Batch processing of multiple sets is supported.
 ### Encoder Selection
 You can choose from three options:  
 - Software encoding  
-- Intel hardware encoding  
+- CPU hardware encoding (intel / AppleSilicon)  
 - nVIDIA hardware encoding  
 <br>
 
@@ -71,6 +73,7 @@ For third-party license details, see `THIRD_PARTY_NOTICES.md`.
 
 ## Requirements
 
+- Apple Silicon Mac (recommended)
 - Windows 10/11 (recommended)
 - Tested with Python 3.14
 - FFmpeg is bundled in `third_party/ffmpeg/` (`ffmpeg.exe` / `ffprobe.exe`)
@@ -79,10 +82,10 @@ For third-party license details, see `THIRD_PARTY_NOTICES.md`.
 <br>
 
 ## Build the EXE (PyInstaller)
-
+### For Windows
 Prepare a virtual environment:
 ```bash
-py -3.14 -m venv venv
+python -m venv venv
 venv\Scripts\activate
 ```
 
@@ -93,7 +96,33 @@ pip install -r requirements.txt
 
 Build using the included spec:
 ```bash
-pyinstaller build.spec
+PyInstaller -y build.spec
+```
+
+The output will be generated under `dist/` (the folder name depends on the spec).
+
+> Notes:
+> - This `build.spec` references bundled assets under `third_party/` (FFmpeg, fonts, etc.).
+> - If you change paths, update `build.spec` accordingly.
+
+<br>
+
+### For macOS
+Prepare a virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Install dependencies:
+```bash
+pip install -U pip
+pip install -r requirements.txt
+```
+
+Build using the included spec:
+```bash
+PyInstaller -y build.spec
 ```
 
 The output will be generated under `dist/` (the folder name depends on the spec).
@@ -113,8 +142,12 @@ Bundled components:
   This repository includes Windows FFmpeg binaries at:  
   `third_party/ffmpeg/ffmpeg.exe`  
   `third_party/ffmpeg/ffprobe.exe`  
-  These are redistributed builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).  
-  See `third_party/ffmpeg/LICENSE` and `third_party/ffmpeg/README.txt` for details.  
+  These are redistributed builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+  <br><br>
+  `third_party/ffmpeg/ffmpeg`  
+  `third_party/ffmpeg/ffprobe`  
+  These are redistributed builds from [evermeet.cx](https://evermeet.cx/ffmpeg/).  
+  See `third_party/ffmpeg/LICENSE` for details.  
 
 - **Roboto font** — `googlefonts/roboto-3-classic` (OFL-1.1, `third_party/Roboto/`)  
 

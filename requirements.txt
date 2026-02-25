@@ -1,16 +1,19 @@
 # GoPro Overlay GUI tool
-# Python 3.14 用
-#
-# py -3.14 -m venv venv
+# Python 3.14
+# 
+# *Windows
+# python -3.14 -m venv venv
 # venv\Scripts\activate
-# python -m pip install --upgrade pip setuptools wheel
+# python -m pip install --upgrade pip
 # pip install -r requirements.txt
-# py -m PyInstaller build.spec --clean
+# PyInstaller -y build.spec
 # 
-# 
-# 
-# 
-# 
+# *macOS
+# python3 -m venv venv313
+# source venv313/bin/activate
+# pip install -U pip
+# pip install -r requirements.txt
+# PyInstaller -y build.spec
 
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3

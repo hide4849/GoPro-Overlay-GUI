@@ -9,14 +9,35 @@ This file lists third-party components that are distributed with this repository
 
 ## Bundled third-party components (distributed in `third_party/`)
 
+### GoPro Dashboard Overlay script
+- Files:
+  - `third_party/gopro-dashboard/gopro-dashboard.py` (unmodified copy)
+  - `third_party/gopro-dashboard/README.md`
+  - `third_party/gopro-dashboard/LICENSE.md`
+- Upstream:
+  - https://github.com/time4tea/gopro-dashboard-overlay
+- License:
+  - GPL-3.0 (per upstream repository). See `third_party/gopro-dashboard/LICENSE.md`.
+
+---
+
 ### FFmpeg / FFprobe
 - Files:
+  - `third_party/ffmpeg/ffmpeg`
+  - `third_party/ffmpeg/ffprobe`
   - `third_party/ffmpeg/ffmpeg.exe`
   - `third_party/ffmpeg/ffprobe.exe`
   - `third_party/ffmpeg/README.txt`
   - `third_party/ffmpeg/LICENSE`
 - Upstream / Distribution:
   - https://www.gyan.dev/ffmpeg/builds/
+  <br><br>
+- Files:
+  - `third_party/ffmpeg/ffmpeg`
+  - `third_party/ffmpeg/ffprobe`
+- Upstream / Distribution:
+  - https://evermeet.cx/ffmpeg/
+  <br><br>
 - License:
   - GPLv3 (as stated by the distributor).
 - Source code:
@@ -34,18 +55,6 @@ This file lists third-party components that are distributed with this repository
   - https://github.com/googlefonts/roboto-3-classic
 - License:
   - SIL Open Font License 1.1 (OFL-1.1). See `third_party/Roboto/OFL.txt`.
-
----
-
-### GoPro Dashboard Overlay script
-- Files:
-  - `third_party/gopro-dashboard/gopro-dashboard.py` (unmodified copy)
-  - `third_party/gopro-dashboard/README.md`
-  - `third_party/gopro-dashboard/LICENSE.md`
-- Upstream:
-  - https://github.com/time4tea/gopro-dashboard-overlay
-- License:
-  - GPL-3.0 (per upstream repository). See `third_party/gopro-dashboard/LICENSE.md`.
 
 ---
 
