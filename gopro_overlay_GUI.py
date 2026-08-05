@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import sys
 import time
@@ -8,7 +9,9 @@ import traceback
 import tempfile
 import subprocess
 import webbrowser
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # --- Tk/Tcl init guard (PyInstaller on macOS) ---
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
@@ -69,6 +72,43 @@ INCLUDE = [
 GPS_SPEED_MAX = "200"
 GPS_SPEED_MAX_UNITS = "kph"
 UNITS_SPEED = "kph"
+
+# IANA timezone names. The combobox remains editable so any valid timezone can
+# be entered even when it is not one of these common presets.
+TIMEZONE_CHOICES = (
+    "Asia/Tokyo",
+    "Europe/Helsinki",
+    "UTC",
+    "America/Los_Angeles",
+    "America/New_York",
+    "Europe/London",
+    "Europe/Paris",
+    "Australia/Sydney",
+)
+
+
+def timezone_offset_text(timezone_name: str, when: datetime | None = None) -> str:
+    """Return the selected zone's UTC offset and DST state at ``when``."""
+    timezone_name = timezone_name.strip()
+    if not timezone_name:
+        return "UTC offset: --"
+
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return "UTC offset: invalid timezone"
+
+    local_time = (when or datetime.now(timezone)).astimezone(timezone)
+    offset = local_time.utcoffset()
+    if offset is None:
+        return "UTC offset: --"
+
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    dst = local_time.dst()
+    clock_type = "Daylight saving time" if dst and dst.total_seconds() else "Standard time"
+    return f"Current: UTC{sign}{hours:02d}:{minutes:02d} ({clock_type})"
 
 
 # =============================
@@ -384,8 +424,13 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, prog
 # =============================
 # Overlay (in-process, hard)
 # =============================
-def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log):
+def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log, timezone_name: str):
     ensure_naked_binaries(log)
+
+    try:
+        selected_tz = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as e:
+        raise RuntimeError(f"Unknown timezone: {timezone_name}") from e
 
     if not DASHBOARD_PY.exists():
         raise RuntimeError(f"Missing asset: {DASHBOARD_PY}")
@@ -410,6 +455,21 @@ def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log):
     ]
     log("\nCMD>> " + " ".join(argv) + "\n")
 
+    # gopro-overlay normally calls astimezone(tz=None), which converts GPS UTC
+    # to the computer's local timezone. Override only its datetime formatter so
+    # rendering follows the timezone selected in this GUI on every platform.
+    from gopro_overlay import layout_xml
+    original_date_formatter = layout_xml.date_formatter_from_element
+
+    def date_formatter_with_selected_timezone(element, entry):
+        format_string = layout_xml.attrib(element, "format")
+        truncate = layout_xml.iattrib(element, "truncate", d=0)
+        return layout_xml.date_formatter_from(
+            entry, format_string, truncate, tz=selected_tz
+        )
+
+    layout_xml.date_formatter_from_element = date_formatter_with_selected_timezone
+
     old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
     sys.argv = argv
     sys.stdout = _LogStream(log)
@@ -422,6 +482,7 @@ def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log):
         log(traceback.format_exc())
         raise
     finally:
+        layout_xml.date_formatter_from_element = original_date_formatter
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
 
     if not output_mp4.exists():
@@ -456,9 +517,14 @@ class App(TkinterDnD.Tk):
                 default_enc = "nvenc"
         self.encoder_var = tk.StringVar(value=default_enc)
         self.resolution_var = tk.StringVar(value="2k")  # default 2K
+        self.timezone_var = tk.StringVar(value="Asia/Tokyo")
+        self.timezone_offset_var = tk.StringVar(
+            value=timezone_offset_text(self.timezone_var.get())
+        )
+        self.selected_timezone = "Asia/Tokyo"
 
         # Mode switch (radio)  ← ここが「押したらGUIも切り替え」
-        self.mode_var = tk.StringVar(value="concat")  # concat / batch
+        self.mode_var = tk.StringVar(value="concat")  # concat / batch / overlay
 
         # Concat mode states
         self.concat_files: list[Path] = []
@@ -475,6 +541,10 @@ class App(TkinterDnD.Tk):
         self.batch_info = tk.StringVar(value="Files loaded: 0   |   Pairs found: 0")
         self.pair_map: dict[str, tuple[Path, Path]] = {}
 
+        # Overlay-only mode: process each MP4 independently in its source folder.
+        self.overlay_files: list[Path] = []
+        self.overlay_files_info = tk.StringVar(value="Files: 0")
+
         # Output dir
         default_out = Path.cwd()
         if IS_MAC:
@@ -482,6 +552,7 @@ class App(TkinterDnD.Tk):
             if desk.exists():
                 default_out = desk
         self.out_dir = tk.StringVar(value=str(default_out))
+        self.save_with_input_var = tk.BooleanVar(value=False)
 
         # Threading / stop
         self.stop_event = threading.Event()
@@ -493,21 +564,41 @@ class App(TkinterDnD.Tk):
         # initial refresh
         self.refresh_concat_list()
         self.refresh_batch_pairs()
+        self.refresh_overlay_list()
 
         # trace for UI switching
         self.mode_var.trace_add("write", lambda *_: self._switch_mode())
+        self.timezone_var.trace_add("write", lambda *_: self._update_timezone_offset())
 
         self._switch_mode()
+
+    def _update_timezone_offset(self):
+        self.timezone_offset_var.set(
+            timezone_offset_text(self.timezone_var.get())
+        )
 
     # ---------- UI ----------
     def _build_ui(self):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=10)
 
-        ttk.Label(top, text="Output folder:").pack(side="left")
-        ttk.Entry(top, textvariable=self.out_dir, width=76).pack(side="left", padx=6)
-        ttk.Button(top, text="Browse", command=self.browse_out).pack(side="left")
-        ttk.Button(top, text="About", command=self.show_about).pack(side="right")
+        output_row = ttk.Frame(top)
+        output_row.pack(side="left", anchor="nw")
+
+        ttk.Label(output_row, text="Output folder:").grid(row=0, column=0, sticky="w")
+        self.out_dir_entry = ttk.Entry(output_row, textvariable=self.out_dir, width=76)
+        self.out_dir_entry.grid(row=0, column=1, padx=6)
+        self.out_dir_button = ttk.Button(output_row, text="Browse", command=self.browse_out)
+        self.out_dir_button.grid(row=0, column=2)
+        ttk.Checkbutton(
+            output_row,
+            text="Save in input file folder",
+            variable=self.save_with_input_var,
+            command=self._update_output_folder_controls,
+        ).grid(row=1, column=1, sticky="w", padx=6, pady=(5, 0))
+        ttk.Button(top, text="About", command=self.show_about).pack(side="right", anchor="n")
+
+        self._update_output_folder_controls()
 
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True, padx=10, pady=10)
@@ -542,6 +633,13 @@ class App(TkinterDnD.Tk):
             value="batch",
         ).pack(side="left", padx=10, pady=4)
 
+        ttk.Radiobutton(
+            mode_box,
+            text="Overlay (MP4 Batch)",
+            variable=self.mode_var,
+            value="overlay",
+        ).pack(side="left", padx=10, pady=4)
+
         opts_row = ttk.Frame(left)
         opts_row.pack(anchor="w", pady=(0, 8))
 
@@ -574,9 +672,9 @@ class App(TkinterDnD.Tk):
 
         ttk.Radiobutton(
             res,
-            text="4K (Original)",
+            text="Original (No Transcode)",
             variable=self.resolution_var,
-            value="4k",
+            value="original",
         ).pack(anchor="w", padx=10, pady=2)
 
         ttk.Radiobutton(
@@ -599,19 +697,41 @@ class App(TkinterDnD.Tk):
 
         self.tl_rbs = [rb_tl1, rb_tl5, rb_tl10]
 
+        # Timezone used by the date/time overlay. Editable for any IANA name.
+        timezone_box = ttk.LabelFrame(left, text="Overlay Timezone")
+        timezone_box.pack(anchor="w", fill="x", pady=(0, 8))
+        ttk.Label(timezone_box, text="Timezone:").grid(
+            row=0, column=0, padx=(10, 4), pady=(5, 2), sticky="w"
+        )
+        self.timezone_combo = ttk.Combobox(
+            timezone_box,
+            textvariable=self.timezone_var,
+            values=TIMEZONE_CHOICES,
+            width=28,
+        )
+        self.timezone_combo.grid(
+            row=0, column=1, padx=(0, 10), pady=(5, 2), sticky="w"
+        )
+        ttk.Label(
+            timezone_box,
+            textvariable=self.timezone_offset_var,
+        ).grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
+
         # ---- STACK AREA (mode-specific UI) ----
         self.stack = ttk.Frame(left)
         self.stack.pack(fill="both", expand=True)
 
         self.concat_frame = ttk.Frame(self.stack)
         self.batch_frame = ttk.Frame(self.stack)
-        for f in (self.concat_frame, self.batch_frame):
+        self.overlay_frame = ttk.Frame(self.stack)
+        for f in (self.concat_frame, self.batch_frame, self.overlay_frame):
             f.grid(row=0, column=0, sticky="nsew")
         self.stack.rowconfigure(0, weight=1)
         self.stack.columnconfigure(0, weight=1)
 
         self._build_concat_ui(self.concat_frame)
         self._build_batch_ui(self.batch_frame)
+        self._build_overlay_ui(self.overlay_frame)
 
         # ---- RIGHT: Log ----
         ttk.Label(right, text="Log").pack(anchor="w")
@@ -666,17 +786,49 @@ class App(TkinterDnD.Tk):
         self.batch_tree.dnd_bind("<<Drop>>", self.batch_on_drop)
         self.batch_tree.bind("<Delete>", self.batch_delete_selected_pairs)
 
+    def _build_overlay_ui(self, parent: ttk.Frame):
+        btns = ttk.Frame(parent)
+        btns.pack(fill="x", pady=(0, 6))
+
+        ttk.Button(btns, text="Add MP4", command=self.overlay_add_files_dialog).pack(side="left")
+        self.overlay_start_btn = ttk.Button(btns, text="Start", command=self.start)
+        self.overlay_start_btn.pack(side="left", padx=6)
+        ttk.Button(btns, text="Clear", command=self.overlay_clear_files).pack(side="left")
+
+        ttk.Label(parent, textvariable=self.overlay_files_info).pack(anchor="w")
+
+        self.overlay_tree = ttk.Treeview(parent, columns=("file", "status"), show="headings", height=16)
+        self.overlay_tree.heading("file", text="MP4 batch list")
+        self.overlay_tree.heading("status", text="Status")
+        self.overlay_tree.column("file", width=100)
+        self.overlay_tree.column("status", width=50, anchor="center")
+        self.overlay_tree.pack(fill="both", expand=True, pady=6)
+        self.overlay_tree.drop_target_register(DND_FILES)
+        self.overlay_tree.dnd_bind("<<Drop>>", self.overlay_on_drop)
+        self.overlay_tree.bind("<Delete>", self.overlay_delete_selected)
+
     # ---------- Mode switch ----------
     def _switch_mode(self):
         mode = self.mode_var.get()
         if mode == "concat":
             self.concat_frame.tkraise()
             self.concat_start_btn.config(text="Start", command=self.start)
-        else:
+        elif mode == "batch":
             self.batch_frame.tkraise()
             self.batch_start_btn.config(text="Start", command=self.start)
+        else:
+            self.overlay_frame.tkraise()
+            self.overlay_start_btn.config(text="Start", command=self.start)
 
     # ---------- Common UI helpers ----------
+
+    def _update_output_folder_controls(self):
+        if self.save_with_input_var.get():
+            self.out_dir_entry.state(["disabled"])
+            self.out_dir_button.state(["disabled"])
+        else:
+            self.out_dir_entry.state(["!disabled"])
+            self.out_dir_button.state(["!disabled"])
 
     def _set_current_proc(self, p):
         self.current_proc = p
@@ -883,12 +1035,15 @@ class App(TkinterDnD.Tk):
         mode = self.mode_var.get()
         if mode == "concat":
             self.concat_start_btn.config(text="Stop", command=self.stop)
-        else:
+        elif mode == "batch":
             self.batch_start_btn.config(text="Stop", command=self.stop)
+        else:
+            self.overlay_start_btn.config(text="Stop", command=self.stop)
 
     def _set_start_button_start(self):
         self.concat_start_btn.config(text="Start", command=self.start)
         self.batch_start_btn.config(text="Start", command=self.start)
+        self.overlay_start_btn.config(text="Start", command=self.start)
 
     # ============================================================
     # Concat mode UI actions
@@ -1004,21 +1159,107 @@ class App(TkinterDnD.Tk):
         self.after(0, _update)
 
     # ============================================================
+    # Overlay-only mode UI actions
+    # ============================================================
+    def overlay_add_files_dialog(self):
+        files = filedialog.askopenfilenames(
+            title="Select MP4 files to overlay",
+            filetypes=[("MP4 files", "*.mp4"), ("All files", "*.*")]
+        )
+        self.overlay_files.extend(Path(f) for f in files)
+        self.overlay_files = uniq_preserve([
+            p for p in self.overlay_files
+            if p.exists() and p.is_file() and p.suffix.lower() == ".mp4"
+        ])
+        self.refresh_overlay_list()
+
+    def overlay_on_drop(self, event):
+        dropped = [
+            p for p in parse_drop_files(event.data)
+            if p.exists() and p.is_file() and p.suffix.lower() == ".mp4"
+        ]
+        self.overlay_files = uniq_preserve(self.overlay_files + dropped)
+        self.refresh_overlay_list()
+
+    def overlay_clear_files(self):
+        self.overlay_files = []
+        self.refresh_overlay_list()
+
+    def refresh_overlay_list(self):
+        if not hasattr(self, "overlay_tree"):
+            return
+        for item in self.overlay_tree.get_children():
+            self.overlay_tree.delete(item)
+        for idx, path in enumerate(self.overlay_files):
+            self.overlay_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready"))
+        self.overlay_files_info.set(f"Files: {len(self.overlay_files)}")
+
+    def overlay_delete_selected(self, event=None):
+        for idx in sorted((int(i) for i in self.overlay_tree.selection()), reverse=True):
+            if 0 <= idx < len(self.overlay_files):
+                self.overlay_files.pop(idx)
+        self.refresh_overlay_list()
+
+    def overlay_set_row_status(self, row_i: int, status: str):
+        def _update():
+            iid = str(row_i)
+            if self.overlay_tree.exists(iid):
+                self.overlay_tree.set(iid, "status", status)
+        self.after(0, _update)
+
+    def _video_width(self, mp4: Path) -> int:
+        """Return the first video stream width, or fail with a useful error."""
+        p = subprocess.run(
+            [
+                str(self.ffprobe), "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width", "-of", "json", str(mp4),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if p.returncode != 0:
+            raise RuntimeError(f"Could not inspect video resolution: {mp4.name}")
+        streams = json.loads(p.stdout or "{}").get("streams", [])
+        if not streams or not streams[0].get("width"):
+            raise RuntimeError(f"Video width not found: {mp4.name}")
+        return int(streams[0]["width"])
+
+    # ============================================================
     # Start/Stop
     # ============================================================
     def start(self):
         mode = self.mode_var.get()
         out_dir = Path(self.out_dir.get()).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        save_with_input = self.save_with_input_var.get()
+        if not save_with_input:
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        timezone_name = self.timezone_var.get().strip()
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            messagebox.showerror(
+                "Invalid timezone",
+                f"タイムゾーン '{timezone_name}' が見つかりません。\n"
+                "例: Asia/Tokyo, Europe/Helsinki, UTC",
+            )
+            return
+        self.selected_timezone = timezone_name
 
         if not self._sanity_check_assets():
             return
 
         self.log(f"Mode: {mode}")
-        self.log(f"Output folder: {out_dir}")
+        if save_with_input:
+            self.log("Output folder: same folder as input file")
+        else:
+            self.log(f"Output folder: {out_dir}")
         self.log(f"ffmpeg:  {self.ffmpeg}")
         self.log(f"ffprobe: {self.ffprobe}")
         self.log(f"font:    {ASSET_FONT}")
+        self.log(f"timezone: {self.selected_timezone}")
         self.log("Starting...")
 
         self.stop_event.clear()
@@ -1032,10 +1273,10 @@ class App(TkinterDnD.Tk):
                 return
             self.worker_thread = threading.Thread(
                 target=self.worker_concat,
-                args=(files_snapshot, out_dir),
+                args=(files_snapshot, files_snapshot[0].parent if save_with_input else out_dir),
                 daemon=True
             )
-        else:
+        elif mode == "batch":
             pairs = build_pairs(self.batch_files)
             if not pairs:
                 messagebox.showwarning("No pairs", "同名の .mp4 と .360 のペアがありません。")
@@ -1043,8 +1284,19 @@ class App(TkinterDnD.Tk):
                 return
             self.worker_thread = threading.Thread(
                 target=self.worker_batch,
-                args=(pairs, out_dir),
+                args=(pairs, out_dir, save_with_input),
                 daemon=True
+            )
+        else:
+            files_snapshot = list(self.overlay_files)
+            if not files_snapshot:
+                messagebox.showwarning("No files", "オーバーレイするMP4を追加してください。")
+                self._set_start_button_start()
+                return
+            self.worker_thread = threading.Thread(
+                target=self.worker_overlay,
+                args=(files_snapshot, out_dir, save_with_input),
+                daemon=True,
             )
 
         self.worker_thread.start()
@@ -1106,7 +1358,7 @@ class App(TkinterDnD.Tk):
 
         # 2) transcode if 2K
         mode_res = self.resolution_var.get()
-        if mode_res == "4k":
+        if mode_res != "2k":
             self.log("\n" + "=" * 90)
             self.log("■ 4K Mode（without Encode）")
             proxy_in = merged_mp4
@@ -1182,7 +1434,7 @@ class App(TkinterDnD.Tk):
         # 3) overlay
         self.log("\n" + "=" * 90)
         self.log("■ Overlay")
-        run_dashboard_overlay(proxy_in, out_mp4, self.log)
+        run_dashboard_overlay(proxy_in, out_mp4, self.log, self.selected_timezone)
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
         # 4) timelapse (optional)
@@ -1199,9 +1451,91 @@ class App(TkinterDnD.Tk):
             ])
 
     # ============================================================
+    # Overlay-only mode worker
+    # ============================================================
+    def worker_overlay(self, files: list[Path], out_dir: Path, save_with_input: bool):
+        try:
+            for row_i, mp4 in enumerate(files):
+                if self.stop_event.is_set():
+                    raise RuntimeError("Stopped by user")
+                self.overlay_set_row_status(row_i, "Processing")
+                try:
+                    file_out_dir = mp4.parent if save_with_input else out_dir
+                    self.process_overlay_file(mp4, file_out_dir)
+                    self.overlay_set_row_status(row_i, "Finish")
+                except Exception:
+                    self.overlay_set_row_status(row_i, "Fail")
+                    raise
+            self.log("\nALL DONE")
+        except Exception as e:
+            self.log(f"\nFATAL ERROR: {e}")
+        finally:
+            self._set_start_button_start()
+            self.current_proc = None
+            self.stop_event.clear()
+
+    def _transcode_overlay_2k(self, src_mp4: Path, proxy_mp4: Path):
+        base = [
+            str(self.ffmpeg), "-y", "-i", str(src_mp4),
+            "-map", "0:v:0", "-map", "0:a?", "-map", "0:d?",
+            "-vf", f"format=yuv420p,scale={DEFAULT_WIDTH_2K}:-2",
+            "-c:a", "copy", "-c:d", "copy",
+        ]
+        mode = self.encoder_var.get()
+        if IS_MAC and mode == "vt" and self.av_vt:
+            try:
+                cmd = base + ["-c:v", "h264_videotoolbox", "-q:v", VT_Q, str(proxy_mp4)]
+                run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+                return
+            except Exception:
+                cmd = base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)]
+        elif mode == "nvenc" and self.av_nvenc:
+            cmd = base + ["-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-cq", NVENC_CQ, str(proxy_mp4)]
+        elif mode == "qsv" and self.av_qsv:
+            cmd = base + ["-c:v", "h264_qsv", "-global_quality", QSV_Q, str(proxy_mp4)]
+        else:
+            cmd = base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(proxy_mp4)]
+        run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+
+    def process_overlay_file(self, mp4: Path, out_dir: Path):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = mp4.stem
+        proxy_mp4 = out_dir / f"{stem}_1080p.mp4"
+        out_mp4 = out_dir / f"{stem}_output.mp4"
+
+        self.log("\n" + "=" * 90)
+        self.log(f"Processing: {mp4}")
+        self.log(f"Output folder: {out_dir}")
+
+        overlay_input = mp4
+        width = self._video_width(mp4)
+        self.log(f"Input width: {width}px")
+        if self.resolution_var.get() == "2k" and width > DEFAULT_WIDTH_2K:
+            self.log("■ 2K Mode: input is larger than 1920px; transcoding")
+            self._transcode_overlay_2k(mp4, proxy_mp4)
+            overlay_input = proxy_mp4
+        elif self.resolution_var.get() == "2k":
+            self.log("■ 2K Mode: input is 1920px or smaller; transcode skipped")
+        else:
+            self.log("■ Original Mode: transcode skipped")
+
+        self.log("■ Overlay")
+        run_dashboard_overlay(overlay_input, out_mp4, self.log, self.selected_timezone)
+        self.log(f"■ Overlay Finish: {out_mp4}")
+        self.apply_timelapse(out_mp4, out_dir, stem)
+
+        if proxy_mp4.exists():
+            self._cleanup_paths([proxy_mp4])
+
+    # ============================================================
     # Batch mode worker
     # ============================================================
-    def worker_batch(self, pairs: list[tuple[Path, Path, str]], out_dir: Path):
+    def worker_batch(
+        self,
+        pairs: list[tuple[Path, Path, str]],
+        out_dir: Path,
+        save_with_input: bool,
+    ):
         try:
             for mp4, s360, stem in pairs:
                 if self.stop_event.is_set():
@@ -1209,7 +1543,9 @@ class App(TkinterDnD.Tk):
 
                 self.batch_set_pair_status(stem, "Processing")
                 try:
-                    ok = self.process_one_pair(mp4, s360, stem, out_dir)
+                    pair_out_dir = mp4.parent if save_with_input else out_dir
+                    pair_out_dir.mkdir(parents=True, exist_ok=True)
+                    ok = self.process_one_pair(mp4, s360, stem, pair_out_dir)
                     self.batch_set_pair_status(stem, "Finish" if ok else "Skip")
                 except Exception:
                     self.batch_set_pair_status(stem, "Fail")
@@ -1265,7 +1601,7 @@ class App(TkinterDnD.Tk):
 
         # 3) transcode if 2K
         mode_res = self.resolution_var.get()
-        if mode_res == "4k":
+        if mode_res != "2k":
             self.log("\n" + "=" * 90)
             self.log("■ 4K Mode（without Encode）")
             proxy_in = merged_mp4
@@ -1341,7 +1677,7 @@ class App(TkinterDnD.Tk):
         # 4) Overlay
         self.log("\n" + "=" * 90)
         self.log("■ Overlay")
-        run_dashboard_overlay(proxy_in, out_mp4, self.log)
+        run_dashboard_overlay(proxy_in, out_mp4, self.log, self.selected_timezone)
 
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 

@@ -55,6 +55,12 @@ For long drive videos, you can choose x5 or x10.
 x1 means no timelapse.  
 <br>
 
+### Overlay Timezone
+You can select the timezone used by the date/time overlay.  
+The default is Japan (`Asia/Tokyo`). For footage recorded abroad, select the recording location's timezone,
+for example `Europe/Helsinki` for Finland. Region-based timezone names automatically account for daylight saving time.
+<br>
+
 ### Delete Intermediate Files
 If checked, unnecessary intermediate files will be removed after processing finishes.  
 <br>

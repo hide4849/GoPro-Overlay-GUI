@@ -89,6 +89,7 @@ if IS_MAC:
     # gopro-dashboard.py is executed via runpy.run_path, so make sure dependencies are included.
     hiddenimports += collect_submodules("gopro_overlay")
     datas += collect_data_files("gopro_overlay", include_py_files=True)
+    datas += collect_data_files("tzdata")
 
     hiddenimports += ["pkg_resources"]
     try:
@@ -126,6 +127,7 @@ else:
         "idna",
         "charset_normalizer",
         "setuptools",
+        "tzdata",
     ]
     for pkg in pkgs:
         d, b, h = collect_all(pkg)
