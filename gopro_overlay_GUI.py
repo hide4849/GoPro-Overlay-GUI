@@ -39,7 +39,8 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_TITLE = "GoPro Overlay GUI Tool v1.1"
+APP_VERSION = "1.3"
+APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
 # --- Encode settings ---
@@ -109,6 +110,33 @@ def timezone_offset_text(timezone_name: str, when: datetime | None = None) -> st
     dst = local_time.dst()
     clock_type = "Daylight saving time" if dst and dst.total_seconds() else "Standard time"
     return f"Current: UTC{sign}{hours:02d}:{minutes:02d} ({clock_type})"
+
+
+def parse_mp4_file_list(text: str, base_dir: Path) -> tuple[list[Path], list[str]]:
+    """Parse plain paths or ffconcat ``file 'path'`` lines in their written order."""
+    files: list[Path] = []
+    ignored: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.lower() == "ffconcat version 1.0":
+            continue
+
+        match = re.fullmatch(r"file\s+(.+)", line, flags=re.IGNORECASE)
+        value = match.group(1).strip() if match else line
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        # Undo the escaping used by ffconcat_line() for apostrophes.
+        value = value.replace("'\\''", "'")
+
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = base_dir / path
+        path = path.resolve()
+        if path.is_file() and path.suffix.lower() == ".mp4":
+            files.append(path)
+        else:
+            ignored.append(raw_line)
+    return files, ignored
 
 
 # =============================
@@ -743,6 +771,7 @@ class App(TkinterDnD.Tk):
         btns.pack(fill="x", pady=(0, 6))
 
         ttk.Button(btns, text="Add MP4", command=self.concat_add_files_dialog).pack(side="left")
+        ttk.Button(btns, text="Load File List", command=self.concat_load_file_list_dialog).pack(side="left", padx=(6, 0))
         self.concat_start_btn = ttk.Button(btns, text="Start", command=self.start)
         self.concat_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.concat_clear_files).pack(side="left")
@@ -858,7 +887,7 @@ class App(TkinterDnD.Tk):
         frm.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(frm, text="GoPro Overlay GUI Tool", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(frm, text="version 1.1").grid(row=1, column=0, sticky="w")
+        ttk.Label(frm, text=f"version {APP_VERSION}").grid(row=1, column=0, sticky="w")
         ttk.Label(frm, text="Copyright © 2026 by Hidenori Saka").grid(row=2, column=0, sticky="w")
 
         # Link-like style (blue + underline)
@@ -1059,10 +1088,48 @@ class App(TkinterDnD.Tk):
         self.concat_files = uniq_preserve([p for p in self.concat_files if p.exists() and p.is_file() and p.suffix.lower() == ".mp4"])
         self.refresh_concat_list()
 
+    def concat_load_file_list_dialog(self):
+        filename = filedialog.askopenfilename(
+            title="Select merge file list",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if filename:
+            self.concat_load_file_list(Path(filename))
+
+    def concat_load_file_list(self, list_path: Path):
+        try:
+            text = list_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            messagebox.showerror("File list error", f"ファイルリストを読み込めません。\n{exc}")
+            return
+
+        files, ignored = parse_mp4_file_list(text, list_path.parent)
+        if not files:
+            messagebox.showwarning("No files", "有効な MP4 パスがファイルリストにありません。")
+            return
+
+        # A file list defines the complete merge order, so replace the current list.
+        self.concat_files = files
+        self.refresh_concat_list()
+        self.log(f"File list loaded: {list_path}")
+        self.log(f"Merge order: {len(files)} file(s)")
+        if ignored:
+            self.log(f"Ignored invalid/non-MP4 list entries: {len(ignored)}")
+
     def concat_on_drop(self, event):
         dropped = [p for p in parse_drop_files(event.data) if p.exists() and p.is_file()]
-        dropped = [p for p in dropped if p.suffix.lower() == ".mp4"]
-        self.concat_files.extend(dropped)
+        list_files = [p for p in dropped if p.suffix.lower() == ".txt"]
+        if list_files:
+            if len(list_files) > 1 or any(p.suffix.lower() == ".mp4" for p in dropped):
+                messagebox.showwarning(
+                    "File list",
+                    "ファイルリストは TXT 1ファイルだけをドロップしてください。",
+                )
+                return
+            self.concat_load_file_list(list_files[0])
+            return
+
+        self.concat_files.extend(p for p in dropped if p.suffix.lower() == ".mp4")
         self.concat_files = uniq_preserve(self.concat_files)
         self.refresh_concat_list()
 
