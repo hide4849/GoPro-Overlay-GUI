@@ -20,7 +20,7 @@ This repository is released under **GPL-3.0**. See `LICENSE`.
 
 ### Mode: “Merge + Overlay”
 When recording for a long time, GoPro will automatically split the video into multiple files.  
-Drag & drop the MP4 files in chronological order, and the tool will merge them into a single MP4 and apply the GPS overlay.
+Drag & drop the MP4 files in chronological order, and the tool will merge them into a single MP4 and apply the GPS overlay. When a text file list is loaded with `Load File List` or drag-and-drop, files are merged in the order written in the text file (one path per line or ffconcat `file 'path'` syntax). Relative paths are resolved from the text file's folder.
 
 ![GUI for long drive videos](doc/drec1.png "GUI for long drive videos")  
 ![Drive video example](doc/drec2.png "Drive video example")  
