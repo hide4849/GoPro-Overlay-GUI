@@ -175,6 +175,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # Build targets
 # ------------------------------------------------------------
 APP_NAME = "GoProOverlayGUI"
+APP_VERSION = "1.3"
 
 if IS_MAC:
     # macOS: build .app bundle, with ad-hoc signing for local use.
@@ -214,6 +215,10 @@ if IS_MAC:
         coll,
         name=f"{APP_NAME}.app",
         bundle_identifier="jp.saka.GoProOverlayGUI",
+        info_plist={
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+        },
     )
 
 else:
