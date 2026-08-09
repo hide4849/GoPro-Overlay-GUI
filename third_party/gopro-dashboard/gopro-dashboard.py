@@ -22,6 +22,7 @@ from gopro_overlay.ffmpeg_overlay import FFMPEGNull, FFMPEGOverlay, FFMPEGOverla
 from gopro_overlay.ffmpeg_profile import load_ffmpeg_profile
 from gopro_overlay.font import load_font
 from gopro_overlay.framemeta_gpx import merge_gpx_with_gopro, timeseries_to_framemeta
+from gopro_overlay.framemeta import FrameMeta
 from gopro_overlay.geo import MapRenderer, api_key_finder, MapStyler
 from gopro_overlay.gpmf import GPS_FIXED_VALUES, GPSFix
 from gopro_overlay.layout import Overlay, speed_awareness_layout
@@ -82,6 +83,38 @@ def fmtdt(dt: datetime.datetime):
     return dt.replace(microsecond=0).isoformat()
 
 
+def combine_segment_framemeta(segment_gopros):
+    """Combine independently processed recordings on one video timeline.
+
+    GoPro STMP/SHUT clocks restart for every recording.  Feeding a stream-copy
+    concat directly to gopro-overlay makes its joined-file clock correction
+    distort the total telemetry duration.  Keeping each segment independent
+    through filtering also prevents speed/Kalman calculations from crossing a
+    recording boundary, while the combined FrameMeta still gives map widgets
+    the complete journey.
+    """
+    combined = FrameMeta()
+    offset = timeunits(seconds=0)
+
+    for gopro in segment_gopros:
+        segment = gopro.framemeta
+        segment.check_modified()
+        for timestamp in segment.framelist:
+            shifted = timestamp + offset
+            entry = segment.frames[timestamp]
+            if entry.timestamp is not None:
+                entry.update(
+                    timestamp=units.Quantity(shifted.millis(), units.number)
+                )
+            combined.add(shifted, entry)
+
+        # Match ffmpeg's concat video timeline. Metadata commonly ends a
+        # fraction of a second before the final video frame.
+        offset += gopro.recording.video.duration
+
+    return combined
+
+
 if __name__ == "__main__":
 
     args = gopro_dashboard_arguments()
@@ -136,6 +169,8 @@ if __name__ == "__main__":
     try:
         with timers.timer("program"):
             with timers.timer("loading timeseries"):
+
+                segment_gopros = None
 
                 if args.use_gpx_only:
 
@@ -213,14 +248,22 @@ if __name__ == "__main__":
                         )
                     )
 
-                    gopro = loader.load(inputpath)
+                    telemetry_segments = globals().get("GOPRO_OVERLAY_TELEMETRY_SEGMENTS")
+                    if telemetry_segments:
+                        log(f"Loading {len(telemetry_segments)} telemetry segments independently")
+                        segment_gopros = [loader.load(Path(path)) for path in telemetry_segments]
+                        recording = ffmpeg_gopro.find_recording(inputpath)
+                        frame_meta = segment_gopros[0].framemeta
+                    else:
+                        segment_gopros = None
+                        gopro = loader.load(inputpath)
+                        recording = gopro.recording
+                        frame_meta = gopro.framemeta
 
                     gpmd_filters.poor_report(counter)
 
-                    frame_meta = gopro.framemeta
-
-                    dimensions = gopro.recording.video.dimension
-                    video_duration = gopro.recording.video.duration
+                    dimensions = recording.video.dimension
+                    video_duration = recording.video.duration
                     packets_per_second = frame_meta.packets_per_second()
 
                     if len(frame_meta) == 0:
@@ -261,16 +304,38 @@ if __name__ == "__main__":
                 locked_2d = lambda e: e.gpsfix in GPS_FIXED_VALUES
                 locked_3d = lambda e: e.gpsfix == GPSFix.LOCK_3D.value
 
-                frame_meta.process(timeseries_process.process_ses("point", lambda i: i.point, alpha=0.45),
-                                   filter_fn=locked_2d)
-                frame_meta.process_deltas(timeseries_process.calculate_speeds(), skip=packets_per_second * 3,
-                                          filter_fn=locked_2d)
-                frame_meta.process(timeseries_process.calculate_odo(), filter_fn=locked_2d)
-                frame_meta.process_accel(timeseries_process.calculate_accel(), skip=18 * 3)
-                frame_meta.process_deltas(timeseries_process.calculate_gradient(), skip=packets_per_second * 3,
-                                          filter_fn=locked_3d)  # hack
-                frame_meta.process(timeseries_process.process_kalman("speed", lambda e: e.speed))
-                frame_meta.process(timeseries_process.filter_locked())
+                processing_segments = (
+                    [gopro.framemeta for gopro in segment_gopros]
+                    if segment_gopros else [frame_meta]
+                )
+                for processing_frame_meta in processing_segments:
+                    segment_pps = processing_frame_meta.packets_per_second()
+                    processing_frame_meta.process(
+                        timeseries_process.process_ses("point", lambda i: i.point, alpha=0.45),
+                        filter_fn=locked_2d
+                    )
+                    processing_frame_meta.process_deltas(
+                        timeseries_process.calculate_speeds(), skip=segment_pps * 3,
+                        filter_fn=locked_2d
+                    )
+                    processing_frame_meta.process(
+                        timeseries_process.calculate_odo(), filter_fn=locked_2d
+                    )
+                    processing_frame_meta.process_accel(
+                        timeseries_process.calculate_accel(), skip=18 * 3
+                    )
+                    processing_frame_meta.process_deltas(
+                        timeseries_process.calculate_gradient(), skip=segment_pps * 3,
+                        filter_fn=locked_3d
+                    )  # hack
+                    processing_frame_meta.process(
+                        timeseries_process.process_kalman("speed", lambda e: e.speed)
+                    )
+                    processing_frame_meta.process(timeseries_process.filter_locked())
+
+                if segment_gopros:
+                    frame_meta = combine_segment_framemeta(segment_gopros)
+                    packets_per_second = frame_meta.packets_per_second()
 
             # privacy zone applies everywhere, not just at start, so might not always be suitable...
             if args.privacy:
