@@ -39,7 +39,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -452,7 +452,13 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, prog
 # =============================
 # Overlay (in-process, hard)
 # =============================
-def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log, timezone_name: str):
+def run_dashboard_overlay(
+    input_mp4: Path,
+    output_mp4: Path,
+    log,
+    timezone_name: str,
+    telemetry_segments: list[Path] | None = None,
+):
     ensure_naked_binaries(log)
 
     try:
@@ -504,7 +510,23 @@ def run_dashboard_overlay(input_mp4: Path, output_mp4: Path, log, timezone_name:
     sys.stderr = _LogStream(log)
 
     try:
-        runpy.run_path(str(DASHBOARD_PY), run_name="__main__")
+        init_globals = {}
+        if telemetry_segments:
+            # Let the dashboard parse and process every original GPMD stream in
+            # isolation.  Parsing a concatenated GPMD stream makes its timestamp
+            # correction span recording boundaries and changes even the data at
+            # the beginning of the movie.  The dashboard combines the processed
+            # segments on the merged video's continuous timeline afterwards.
+            init_globals["GOPRO_OVERLAY_TELEMETRY_SEGMENTS"] = [
+                str(path) for path in telemetry_segments
+            ]
+            log(f"Telemetry segments: {len(telemetry_segments)}")
+
+        runpy.run_path(
+            str(DASHBOARD_PY),
+            run_name="__main__",
+            init_globals=init_globals,
+        )
     except Exception:
         log("[gopro-dashboard] Exception occurred:")
         log(traceback.format_exc())
@@ -1501,7 +1523,13 @@ class App(TkinterDnD.Tk):
         # 3) overlay
         self.log("\n" + "=" * 90)
         self.log("■ Overlay")
-        run_dashboard_overlay(proxy_in, out_mp4, self.log, self.selected_timezone)
+        run_dashboard_overlay(
+            proxy_in,
+            out_mp4,
+            self.log,
+            self.selected_timezone,
+            telemetry_segments=files,
+        )
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
         # 4) timelapse (optional)
