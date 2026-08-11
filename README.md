@@ -39,10 +39,11 @@ GPSデータ読み込みのため、出力された.MP4と元の.360ファイル
 
 
 ### ・ エンコーダの選択
-3パターンから選択できます。  
-・ソフトウェアエンコード  
-・CPU HWエンコード(intel / AppleSilicon)  
-・nVIDIA HWエンコード (Windowsのみ)
+4パターンから選択できます。
+- ソフトウェアエンコード
+- CPU HWエンコード（Intel / Apple Silicon）
+- NVIDIA HWエンコード（Windowsのみ）
+- AMD Radeon AMF HWエンコード（Windowsのみ、Ryzen AI Max+ 395 / Radeon 8060S対応）
 <br>
 
 

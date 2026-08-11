@@ -39,7 +39,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -57,6 +57,9 @@ NVENC_CQ = "22"
 
 # Intel QSV
 QSV_Q = "22"
+
+# AMD AMF (Ryzen/Radeon, including Ryzen AI Max+ 395 / Radeon 8060S)
+AMF_Q = "22"
 
 # --- Overlay components（地図必須） ---
 INCLUDE = [
@@ -212,8 +215,8 @@ def ensure_naked_binaries(log=None):
 
 
 
-def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool, bool]:
-    """Detect availability of H.264 hardware encoders."""
+def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool, bool, bool]:
+    """Detect H.264 encoders and verify that AMD AMF can open a real device."""
     p = subprocess.run(
         [str(ffmpeg), "-hide_banner", "-encoders"],
         stdout=subprocess.PIPE,
@@ -225,7 +228,30 @@ def detect_hw_encoders(ffmpeg: Path) -> tuple[bool, bool, bool]:
     av_nvenc = ("h264_nvenc" in txt)
     av_qsv = ("h264_qsv" in txt)
     av_vt = ("h264_videotoolbox" in txt)
-    return av_nvenc, av_qsv, av_vt
+    av_amf = ("h264_amf" in txt)
+    if av_amf:
+        # An FFmpeg build may expose AMF even when no compatible Radeon GPU or
+        # driver is installed. A tiny in-memory encode prevents selecting AMF
+        # by default on those systems.
+        try:
+            probe = subprocess.run(
+                [
+                    str(ffmpeg), "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30",
+                    "-frames:v", "1", "-an", "-c:v", "h264_amf",
+                    "-quality", "balanced", "-rc", "cqp",
+                    "-qp_i", AMF_Q, "-qp_p", AMF_Q,
+                    "-f", "null", "-",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            av_amf = (probe.returncode == 0)
+        except (OSError, subprocess.SubprocessError):
+            av_amf = False
+    return av_nvenc, av_qsv, av_vt, av_amf
 
 
 def parse_drop_files(data: str) -> list[Path]:
@@ -553,7 +579,7 @@ class App(TkinterDnD.Tk):
         self.ffprobe = ASSET_FFPROBE
 
         # Detect encoders
-        self.av_nvenc, self.av_qsv, self.av_vt = detect_hw_encoders(self.ffmpeg)
+        self.av_nvenc, self.av_qsv, self.av_vt, self.av_amf = detect_hw_encoders(self.ffmpeg)
 
         # Shared options
         default_enc = "cpu"
@@ -561,7 +587,9 @@ class App(TkinterDnD.Tk):
             if self.av_vt:
                 default_enc = "vt"
         else:
-            if self.av_qsv:
+            if self.av_amf:
+                default_enc = "amf"
+            elif self.av_qsv:
                 default_enc = "qsv"
             elif self.av_nvenc:
                 default_enc = "nvenc"
@@ -706,11 +734,15 @@ class App(TkinterDnD.Tk):
             if not self.av_vt:
                 rb_vt.state(["disabled"])
         else:
+            rb_amf = ttk.Radiobutton(enc, text="AMD Radeon (AMF)", variable=self.encoder_var, value="amf")
             rb_qsv = ttk.Radiobutton(enc, text="Intel QSV", variable=self.encoder_var, value="qsv")
             rb_nv  = ttk.Radiobutton(enc, text="nVIDIA NVENC", variable=self.encoder_var, value="nvenc")
+            rb_amf.pack(anchor="w", padx=10, pady=2)
             rb_qsv.pack(anchor="w", padx=10, pady=2)
             rb_nv.pack(anchor="w", padx=10, pady=2)
 
+            if not self.av_amf:
+                rb_amf.state(["disabled"])
             if not self.av_qsv:
                 rb_qsv.state(["disabled"])
             if not self.av_nvenc:
@@ -1003,6 +1035,9 @@ class App(TkinterDnD.Tk):
                 self.log(">> VideoToolbox not available; fallback to Software")
                 mode = "cpu"
         else:
+            if mode == "amf" and not self.av_amf:
+                self.log(">> AMD AMF not available; fallback to Software")
+                mode = "cpu"
             if mode == "nvenc" and not self.av_nvenc:
                 self.log(">> NVENC not available; fallback to Software")
                 mode = "cpu"
@@ -1019,7 +1054,18 @@ class App(TkinterDnD.Tk):
                         self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
 
         def _run_win_hw(cmd_base):
-            if mode == "nvenc":
+            if mode == "amf":
+                try:
+                    run_cmd(cmd_base + ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                                            "-qp_i", AMF_Q, "-qp_p", AMF_Q, str(tl_output)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+                except Exception:
+                    if self.stop_event.is_set():
+                        raise
+                    self.log(">> AMD AMF encode failed; retrying with Software")
+                    run_cmd(cmd_base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(tl_output)],
+                            self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
+            elif mode == "nvenc":
                 run_cmd(cmd_base + ["-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-cq", NVENC_CQ, str(tl_output)],
                         self.log, stop_event=self.stop_event, on_proc=self._set_current_proc, progress_time_scale=float(tl_mode))
             elif mode == "qsv":
@@ -1464,6 +1510,9 @@ class App(TkinterDnD.Tk):
                     self.log(">> VideoToolbox not available; fallback to Software")
                     mode = "cpu"
             else:
+                if mode == "amf" and not self.av_amf:
+                    self.log(">> AMD AMF not available; fallback to Software")
+                    mode = "cpu"
                 if mode == "nvenc" and not self.av_nvenc:
                     self.log(">> NVENC not available; fallback to Software")
                     mode = "cpu"
@@ -1486,6 +1535,30 @@ class App(TkinterDnD.Tk):
                     run_cmd(base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)],
                             self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
 
+            elif mode == "amf":
+                amf_cmd = [
+                    str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                    "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:d:0?",
+                    "-vf", vf,
+                    "-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                    "-qp_i", AMF_Q, "-qp_p", AMF_Q,
+                    "-c:a", "copy",
+                    "-c:d", "copy",
+                    str(proxy_mp4)
+                ]
+                try:
+                    run_cmd(amf_cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+                except Exception:
+                    if self.stop_event.is_set():
+                        raise
+                    self.log(">> AMD AMF encode failed; retrying with Software")
+                    run_cmd([
+                        str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                        "-map", "0:v:0", "-map", "0:a:0?", "-map", "0:d:0?",
+                        "-vf", vf,
+                        "-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF,
+                        "-c:a", "copy", "-c:d", "copy", str(proxy_mp4)
+                    ], self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
             elif mode == "nvenc":
                 run_cmd([
                     str(self.ffmpeg), "-y", "-i", str(merged_mp4),
@@ -1584,13 +1657,23 @@ class App(TkinterDnD.Tk):
                 return
             except Exception:
                 cmd = base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)]
+        elif mode == "amf" and self.av_amf:
+            cmd = base + ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                          "-qp_i", AMF_Q, "-qp_p", AMF_Q, str(proxy_mp4)]
         elif mode == "nvenc" and self.av_nvenc:
             cmd = base + ["-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-cq", NVENC_CQ, str(proxy_mp4)]
         elif mode == "qsv" and self.av_qsv:
             cmd = base + ["-c:v", "h264_qsv", "-global_quality", QSV_Q, str(proxy_mp4)]
         else:
             cmd = base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(proxy_mp4)]
-        run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+        try:
+            run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+        except Exception:
+            if mode != "amf" or not self.av_amf or self.stop_event.is_set():
+                raise
+            self.log(">> AMD AMF encode failed; retrying with Software")
+            cmd = base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(proxy_mp4)]
+            run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
 
     def process_overlay_file(self, mp4: Path, out_dir: Path):
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1713,6 +1796,9 @@ class App(TkinterDnD.Tk):
                     self.log(">> VideoToolbox not available; fallback to Software")
                     mode = "cpu"
             else:
+                if mode == "amf" and not self.av_amf:
+                    self.log(">> AMD AMF not available; fallback to Software")
+                    mode = "cpu"
                 if mode == "nvenc" and not self.av_nvenc:
                     self.log(">> NVENC not available; fallback to Software")
                     mode = "cpu"
@@ -1735,6 +1821,30 @@ class App(TkinterDnD.Tk):
                     run_cmd(base + ["-c:v", "h264_videotoolbox", "-b:v", VT_BITRATE, str(proxy_mp4)],
                             self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
 
+            elif mode == "amf":
+                amf_cmd = [
+                    str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                    "-map", "0:v:0", "-map", "0:a?", "-map", "0:d:0",
+                    "-vf", vf,
+                    "-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp",
+                    "-qp_i", AMF_Q, "-qp_p", AMF_Q,
+                    "-c:a", "copy",
+                    "-c:d", "copy",
+                    str(proxy_mp4)
+                ]
+                try:
+                    run_cmd(amf_cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+                except Exception:
+                    if self.stop_event.is_set():
+                        raise
+                    self.log(">> AMD AMF encode failed; retrying with Software")
+                    run_cmd([
+                        str(self.ffmpeg), "-y", "-i", str(merged_mp4),
+                        "-map", "0:v:0", "-map", "0:a?", "-map", "0:d:0",
+                        "-vf", vf,
+                        "-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF,
+                        "-c:a", "copy", "-c:d", "copy", str(proxy_mp4)
+                    ], self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
             elif mode == "nvenc":
                 run_cmd([
                     str(self.ffmpeg), "-y", "-i", str(merged_mp4),
