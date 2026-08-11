@@ -38,10 +38,11 @@ Batch processing of multiple sets is supported.
 <br>
 
 ### Encoder Selection
-You can choose from three options:  
+You can choose from four options:
 - Software encoding  
 - CPU hardware encoding (intel / AppleSilicon)  
 - nVIDIA hardware encoding  
+- AMD Radeon AMF hardware encoding on Windows (including Ryzen AI Max+ 395 / Radeon 8060S)
 <br>
 
 ### Output Resolution
