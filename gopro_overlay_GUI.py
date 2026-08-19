@@ -9,6 +9,7 @@ import traceback
 import tempfile
 import subprocess
 import webbrowser
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -39,7 +40,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.5"
+APP_VERSION = "1.6"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -61,16 +62,17 @@ QSV_Q = "22"
 # AMD AMF (Ryzen/Radeon, including Ryzen AI Max+ 395 / Radeon 8060S)
 AMF_Q = "22"
 
-# --- Overlay components（地図必須） ---
-INCLUDE = [
-    "date_and_time",
-    "gps_info",
-    "gps-lock",
-    "big_mph",
-    "altitude",
-    "moving_map",
-    "journey_map",
-]
+# --- Overlay components ---
+OVERLAY_COMPONENTS = (
+    ("date_and_time", "Date / Time"),
+    ("gps_info", "GPS Coordinates"),
+    ("gps-lock", "GPS Lock"),
+    ("gps_dop", "GPS Accuracy (DOP)"),
+    ("big_mph", "Speed"),
+    ("altitude", "Altitude"),
+    ("moving_map", "Moving Map"),
+    ("journey_map", "Journey Map"),
+)
 
 # --- GPS sanity caps ---
 GPS_SPEED_MAX = "200"
@@ -113,6 +115,63 @@ def timezone_offset_text(timezone_name: str, when: datetime | None = None) -> st
     dst = local_time.dst()
     clock_type = "Daylight saving time" if dst and dst.total_seconds() else "Standard time"
     return f"Current: UTC{sign}{hours:02d}:{minutes:02d} ({clock_type})"
+
+
+def add_gps_dop_to_layout(xml_text: str) -> str:
+    """Add independently selectable GPS lock and DOP items to a stock layout."""
+    root = ET.fromstring(xml_text)
+    gps_info = next(
+        (element for element in root if element.attrib.get("name") == "gps_info"),
+        None,
+    )
+    if gps_info is None:
+        return xml_text
+
+    gps_x = int(gps_info.attrib.get("x", "0"))
+    gps_y = int(gps_info.attrib.get("y", "0"))
+    insert_at = list(root).index(gps_info) + 1
+
+    # The stock layout nests the lock icon inside gps_info. Move it to the
+    # root so its checkbox works independently from the coordinate display.
+    gps_lock = next(
+        (child for child in gps_info if child.attrib.get("name") == "gps-lock"),
+        None,
+    )
+    if gps_lock is not None:
+        gps_info.remove(gps_lock)
+        gps_lock.set("x", str(gps_x + int(gps_lock.attrib.get("x", "0"))))
+        gps_lock.set("y", str(gps_y + int(gps_lock.attrib.get("y", "0"))))
+        root.insert(insert_at, gps_lock)
+        insert_at += 1
+
+    if not any(element.attrib.get("name") == "gps_dop" for element in root):
+        dop = ET.Element(
+            "composite",
+            {"x": str(gps_x), "y": str(gps_y + 84), "name": "gps_dop"},
+        )
+        label = ET.SubElement(
+            dop,
+            "component",
+            {"type": "text", "x": "0", "y": "0", "size": "16"},
+        )
+        label.text = "DOP:"
+        ET.SubElement(
+            dop,
+            "component",
+            {
+                "type": "metric",
+                "x": "72",
+                "y": "0",
+                "metric": "gps-dop",
+                "dp": "1",
+                "size": "16",
+                "align": "right",
+                "cache": "False",
+            },
+        )
+        root.insert(insert_at, dop)
+
+    return ET.tostring(root, encoding="unicode")
 
 
 def parse_mp4_file_list(text: str, base_dir: Path) -> tuple[list[Path], list[str]]:
@@ -316,9 +375,9 @@ def build_pairs(files: set[Path]) -> list[tuple[Path, Path, str]]:
     return [(mp4[s], s360[s], s) for s in stems]
 
 
-def detect_gpmd_stream_index(ffprobe: Path, s360: Path) -> str:
+def detect_gpmd_stream_index(ffprobe: Path, media_file: Path) -> str:
     p = subprocess.run(
-        [str(ffprobe), "-hide_banner", "-i", str(s360)],
+        [str(ffprobe), "-hide_banner", "-i", str(media_file)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -483,6 +542,7 @@ def run_dashboard_overlay(
     output_mp4: Path,
     log,
     timezone_name: str,
+    overlay_components: list[str],
     telemetry_segments: list[Path] | None = None,
 ):
     ensure_naked_binaries(log)
@@ -505,7 +565,7 @@ def run_dashboard_overlay(
         str(DASHBOARD_PY),
         "--show-ffmpeg",
         "--ffmpeg-dir", mei_dir,
-        "--include", *INCLUDE,
+        "--include", *overlay_components,
         "--units-speed", UNITS_SPEED,
         "--gps-speed-max", GPS_SPEED_MAX,
         "--gps-speed-max-units", GPS_SPEED_MAX_UNITS,
@@ -520,6 +580,7 @@ def run_dashboard_overlay(
     # rendering follows the timezone selected in this GUI on every platform.
     from gopro_overlay import layout_xml
     original_date_formatter = layout_xml.date_formatter_from_element
+    original_load_xml_layout = layout_xml.load_xml_layout
 
     def date_formatter_with_selected_timezone(element, entry):
         format_string = layout_xml.attrib(element, "format")
@@ -528,7 +589,14 @@ def run_dashboard_overlay(
             entry, format_string, truncate, tz=selected_tz
         )
 
+    def load_xml_layout_with_gps_dop(filepath):
+        xml_text = original_load_xml_layout(filepath)
+        if filepath.name.startswith("default-"):
+            return add_gps_dop_to_layout(xml_text)
+        return xml_text
+
     layout_xml.date_formatter_from_element = date_formatter_with_selected_timezone
+    layout_xml.load_xml_layout = load_xml_layout_with_gps_dop
 
     old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
     sys.argv = argv
@@ -559,6 +627,7 @@ def run_dashboard_overlay(
         raise
     finally:
         layout_xml.date_formatter_from_element = original_date_formatter
+        layout_xml.load_xml_layout = original_load_xml_layout
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
 
     if not output_mp4.exists():
@@ -600,6 +669,10 @@ class App(TkinterDnD.Tk):
             value=timezone_offset_text(self.timezone_var.get())
         )
         self.selected_timezone = "Asia/Tokyo"
+        self.overlay_component_vars = {
+            name: tk.BooleanVar(value=True) for name, _ in OVERLAY_COMPONENTS
+        }
+        self.selected_overlay_components = [name for name, _ in OVERLAY_COMPONENTS]
 
         # Mode switch (radio)  ← ここが「押したらGUIも切り替え」
         self.mode_var = tk.StringVar(value="concat")  # concat / batch / overlay
@@ -630,7 +703,7 @@ class App(TkinterDnD.Tk):
             if desk.exists():
                 default_out = desk
         self.out_dir = tk.StringVar(value=str(default_out))
-        self.save_with_input_var = tk.BooleanVar(value=False)
+        self.save_with_input_var = tk.BooleanVar(value=True)
 
         # Threading / stop
         self.stop_event = threading.Event()
@@ -798,6 +871,21 @@ class App(TkinterDnD.Tk):
             timezone_box,
             textvariable=self.timezone_offset_var,
         ).grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
+
+        overlay_box = ttk.LabelFrame(left, text="Overlay Items")
+        overlay_box.pack(anchor="w", fill="x", pady=(0, 8))
+        for index, (name, label) in enumerate(OVERLAY_COMPONENTS):
+            ttk.Checkbutton(
+                overlay_box,
+                text=label,
+                variable=self.overlay_component_vars[name],
+            ).grid(
+                row=index // 4,
+                column=index % 4,
+                padx=(8, 4),
+                pady=2,
+                sticky="w",
+            )
 
         # ---- STACK AREA (mode-specific UI) ----
         self.stack = ttk.Frame(left)
@@ -1383,6 +1471,19 @@ class App(TkinterDnD.Tk):
             return
         self.selected_timezone = timezone_name
 
+        selected_components = [
+            name
+            for name, _ in OVERLAY_COMPONENTS
+            if self.overlay_component_vars[name].get()
+        ]
+        if not selected_components:
+            messagebox.showwarning(
+                "No overlay items",
+                "オーバーレイ項目を1つ以上選択してください。",
+            )
+            return
+        self.selected_overlay_components = selected_components
+
         if not self._sanity_check_assets():
             return
 
@@ -1395,6 +1496,7 @@ class App(TkinterDnD.Tk):
         self.log(f"ffprobe: {self.ffprobe}")
         self.log(f"font:    {ASSET_FONT}")
         self.log(f"timezone: {self.selected_timezone}")
+        self.log(f"overlay items: {', '.join(self.selected_overlay_components)}")
         self.log("Starting...")
 
         self.stop_event.clear()
@@ -1480,16 +1582,26 @@ class App(TkinterDnD.Tk):
         txt = "\n".join(ffconcat_line(p) for p in files) + "\n"
         files_txt.write_text(txt, encoding="utf-8")
 
-        run_cmd([
+        concat_cmd = [
             str(self.ffmpeg), "-y",
             "-f", "concat", "-safe", "0",
             "-i", str(files_txt),
             "-map", "0:v:0",
             "-map", "0:a:0?",
-            "-map", "0:d:0?",
-            "-c", "copy",
-            str(merged_mp4)
-        ], self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
+        ]
+        gpmd_index = detect_gpmd_stream_index(self.ffprobe, files[0])
+        if gpmd_index:
+            # GoPro files can also contain a tmcd data stream. Mapping every
+            # data stream makes ffmpeg try to mux tmcd as codec "none", which
+            # MP4 rejects. Preserve only the telemetry (gpmd) stream.
+            concat_cmd += ["-map", f"0:{gpmd_index}"]
+        concat_cmd += ["-c", "copy", str(merged_mp4)]
+        run_cmd(
+            concat_cmd,
+            self.log,
+            stop_event=self.stop_event,
+            on_proc=self._set_current_proc,
+        )
 
         # 2) transcode if 2K
         mode_res = self.resolution_var.get()
@@ -1601,6 +1713,7 @@ class App(TkinterDnD.Tk):
             out_mp4,
             self.log,
             self.selected_timezone,
+            self.selected_overlay_components,
             telemetry_segments=files,
         )
         self.log(f"■ Overlay Finish: {out_mp4.name}")
@@ -1645,7 +1758,12 @@ class App(TkinterDnD.Tk):
     def _transcode_overlay_2k(self, src_mp4: Path, proxy_mp4: Path):
         base = [
             str(self.ffmpeg), "-y", "-i", str(src_mp4),
-            "-map", "0:v:0", "-map", "0:a?", "-map", "0:d?",
+            "-map", "0:v:0", "-map", "0:a?",
+        ]
+        gpmd_index = detect_gpmd_stream_index(self.ffprobe, src_mp4)
+        if gpmd_index:
+            base += ["-map", f"0:{gpmd_index}"]
+        base += [
             "-vf", f"format=yuv420p,scale={DEFAULT_WIDTH_2K}:-2",
             "-c:a", "copy", "-c:d", "copy",
         ]
@@ -1698,7 +1816,13 @@ class App(TkinterDnD.Tk):
             self.log("■ Original Mode: transcode skipped")
 
         self.log("■ Overlay")
-        run_dashboard_overlay(overlay_input, out_mp4, self.log, self.selected_timezone)
+        run_dashboard_overlay(
+            overlay_input,
+            out_mp4,
+            self.log,
+            self.selected_timezone,
+            self.selected_overlay_components,
+        )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)
 
@@ -1882,7 +2006,13 @@ class App(TkinterDnD.Tk):
         # 4) Overlay
         self.log("\n" + "=" * 90)
         self.log("■ Overlay")
-        run_dashboard_overlay(proxy_in, out_mp4, self.log, self.selected_timezone)
+        run_dashboard_overlay(
+            proxy_in,
+            out_mp4,
+            self.log,
+            self.selected_timezone,
+            self.selected_overlay_components,
+        )
 
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
