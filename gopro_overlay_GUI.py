@@ -3,7 +3,6 @@ import json
 import re
 import sys
 import time
-import shutil
 import threading
 import traceback
 import tempfile
@@ -40,7 +39,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -259,18 +258,14 @@ if getattr(sys, "frozen", False):
 # =============================
 # Helpers
 # =============================
-def ensure_naked_binaries(log=None):
-    """Create extensionless ffmpeg/ffprobe next to ffmpeg.exe/ffprobe.exe for libs that call '.../ffmpeg'."""
+def windows_ffmpeg_executable(path):
+    """Use the real .exe instead of making an extensionless copy on Windows."""
     if os.name != "nt":
-        return
-    base = rpath(".")
-    for exe_name, naked_name in [("ffmpeg.exe", "ffmpeg"), ("ffprobe.exe", "ffprobe")]:
-        src = base / exe_name
-        dst = base / naked_name
-        if src.exists() and not dst.exists():
-            shutil.copyfile(src, dst)
-            if log:
-                log(f"Created naked binary: {dst.name}")
+        return path
+    executable = Path(path)
+    if executable.suffix.lower() != ".exe":
+        executable = executable.with_name(executable.name + ".exe")
+    return executable
 
 
 
@@ -544,9 +539,8 @@ def run_dashboard_overlay(
     timezone_name: str,
     overlay_components: list[str],
     telemetry_segments: list[Path] | None = None,
+    fallback_gpx: Path | None = None,
 ):
-    ensure_naked_binaries(log)
-
     try:
         selected_tz = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError as e:
@@ -579,8 +573,10 @@ def run_dashboard_overlay(
     # to the computer's local timezone. Override only its datetime formatter so
     # rendering follows the timezone selected in this GUI on every platform.
     from gopro_overlay import layout_xml
+    from gopro_overlay.ffmpeg import FFMPEG
     original_date_formatter = layout_xml.date_formatter_from_element
     original_load_xml_layout = layout_xml.load_xml_layout
+    original_ffmpeg_path = FFMPEG._path
 
     def date_formatter_with_selected_timezone(element, entry):
         format_string = layout_xml.attrib(element, "format")
@@ -598,6 +594,15 @@ def run_dashboard_overlay(
     layout_xml.date_formatter_from_element = date_formatter_with_selected_timezone
     layout_xml.load_xml_layout = load_xml_layout_with_gps_dop
 
+    def ffmpeg_path_with_windows_extension(instance):
+        return windows_ffmpeg_executable(original_ffmpeg_path(instance))
+
+    # gopro-overlay constructs extensionless binary names. In a PyInstaller
+    # one-file build, copying ffprobe.exe to an extensionless file in _MEI can
+    # fail at process startup with Windows status 0xC0000142. Point every
+    # nested FFMPEG/FFprobe invocation at the bundled .exe directly instead.
+    FFMPEG._path = ffmpeg_path_with_windows_extension
+
     old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
     sys.argv = argv
     sys.stdout = _LogStream(log)
@@ -605,6 +610,9 @@ def run_dashboard_overlay(
 
     try:
         init_globals = {}
+        if fallback_gpx:
+            init_globals["GOPRO_OVERLAY_FALLBACK_GPX"] = str(fallback_gpx)
+            log(f"Fallback GPS logger: {fallback_gpx}")
         if telemetry_segments:
             # Let the dashboard parse and process every original GPMD stream in
             # isolation.  Parsing a concatenated GPMD stream makes its timestamp
@@ -628,6 +636,7 @@ def run_dashboard_overlay(
     finally:
         layout_xml.date_formatter_from_element = original_date_formatter
         layout_xml.load_xml_layout = original_load_xml_layout
+        FFMPEG._path = original_ffmpeg_path
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
 
     if not output_mp4.exists():
@@ -673,6 +682,8 @@ class App(TkinterDnD.Tk):
             name: tk.BooleanVar(value=True) for name, _ in OVERLAY_COMPONENTS
         }
         self.selected_overlay_components = [name for name, _ in OVERLAY_COMPONENTS]
+        self.fallback_gpx_var = tk.StringVar(value="")
+        self.selected_fallback_gpx: Path | None = None
 
         # Mode switch (radio)  ← ここが「押したらGUIも切り替え」
         self.mode_var = tk.StringVar(value="concat")  # concat / batch / overlay
@@ -887,6 +898,26 @@ class App(TkinterDnD.Tk):
                 sticky="w",
             )
 
+        fallback_box = ttk.LabelFrame(left, text="GPS Logger Fallback")
+        fallback_box.pack(anchor="w", fill="x", pady=(0, 8))
+        ttk.Label(fallback_box, text="GPX file:").grid(
+            row=0, column=0, padx=(10, 4), pady=5, sticky="w"
+        )
+        ttk.Entry(
+            fallback_box, textvariable=self.fallback_gpx_var, width=54
+        ).grid(row=0, column=1, padx=(0, 4), pady=5, sticky="ew")
+        ttk.Button(
+            fallback_box, text="Browse", command=self.browse_fallback_gpx
+        ).grid(row=0, column=2, padx=(0, 4), pady=5)
+        ttk.Button(
+            fallback_box, text="Clear", command=lambda: self.fallback_gpx_var.set("")
+        ).grid(row=0, column=3, padx=(0, 10), pady=5)
+        ttk.Label(
+            fallback_box,
+            text="Used only when GoPro GPS is invalid (maximum interpolation gap: 60 s)",
+        ).grid(row=1, column=1, columnspan=3, padx=(0, 10), pady=(0, 5), sticky="w")
+        fallback_box.columnconfigure(1, weight=1)
+
         # ---- STACK AREA (mode-specific UI) ----
         self.stack = ttk.Frame(left)
         self.stack.pack(fill="both", expand=True)
@@ -1013,6 +1044,17 @@ class App(TkinterDnD.Tk):
         d = filedialog.askdirectory(initialdir=self.out_dir.get())
         if d:
             self.out_dir.set(d)
+
+    def browse_fallback_gpx(self):
+        initial = self.fallback_gpx_var.get().strip()
+        initial_dir = str(Path(initial).parent) if initial else self.out_dir.get()
+        filename = filedialog.askopenfilename(
+            title="Select GPS logger GPX file",
+            initialdir=initial_dir,
+            filetypes=[("GPX files", "*.gpx"), ("All files", "*.*")],
+        )
+        if filename:
+            self.fallback_gpx_var.set(filename)
 
 
 
@@ -1484,6 +1526,18 @@ class App(TkinterDnD.Tk):
             return
         self.selected_overlay_components = selected_components
 
+        fallback_text = self.fallback_gpx_var.get().strip()
+        self.selected_fallback_gpx = None
+        if fallback_text:
+            fallback_gpx = Path(fallback_text).expanduser().resolve()
+            if not fallback_gpx.is_file() or fallback_gpx.suffix.lower() != ".gpx":
+                messagebox.showerror(
+                    "Invalid GPX file",
+                    "Select an existing GPS logger file with the .gpx extension.",
+                )
+                return
+            self.selected_fallback_gpx = fallback_gpx
+
         if not self._sanity_check_assets():
             return
 
@@ -1497,6 +1551,8 @@ class App(TkinterDnD.Tk):
         self.log(f"font:    {ASSET_FONT}")
         self.log(f"timezone: {self.selected_timezone}")
         self.log(f"overlay items: {', '.join(self.selected_overlay_components)}")
+        if self.selected_fallback_gpx:
+            self.log(f"GPS fallback: {self.selected_fallback_gpx}")
         self.log("Starting...")
 
         self.stop_event.clear()
@@ -1715,6 +1771,7 @@ class App(TkinterDnD.Tk):
             self.selected_timezone,
             self.selected_overlay_components,
             telemetry_segments=files,
+            fallback_gpx=self.selected_fallback_gpx,
         )
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
@@ -1822,6 +1879,7 @@ class App(TkinterDnD.Tk):
             self.log,
             self.selected_timezone,
             self.selected_overlay_components,
+            fallback_gpx=self.selected_fallback_gpx,
         )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)
@@ -2012,6 +2070,7 @@ class App(TkinterDnD.Tk):
             self.log,
             self.selected_timezone,
             self.selected_overlay_components,
+            fallback_gpx=self.selected_fallback_gpx,
         )
 
         self.log(f"■ Overlay Finish: {out_mp4.name}")

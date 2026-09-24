@@ -65,6 +65,12 @@ x1がタイムラプスなしです。
 `Europe/Helsinki` を選択してください。地域名を使うため、夏時間も自動的に反映されます。
 <br>
 
+### ・ GPSロガーによる補完
+GPSロガーの `.gpx` ファイルを指定できます。GoPro GPSが正常な地点はそのまま使用し、
+GPSロックなし、DOP不良、異常速度などで無効になった地点だけをGPXで補完します。
+時刻はGPX内のUTC時刻で自動同期し、60秒を超える未記録区間は補間しません。
+<br>
+
 
 ### ・ 中間ファイル削除
 これにチェックを入れると、完了後に不要な中間ファイルが削除されます。
@@ -166,7 +172,7 @@ PyInstaller -y build.spec
 
 - **Roboto フォント** — `googlefonts/roboto-3-classic`（OFL-1.1、`third_party/Roboto/`）  
 
-- **gopro-dashboard overlay script** — `time4tea/gopro-dashboard-overlay` から未改変で同梱（GPL-3.0、`third_party/gopro-dashboard/`）
+- **gopro-dashboard overlay script** — `time4tea/gopro-dashboard-overlay` を基にGUI統合用の変更を加えて同梱（GPL-3.0、`third_party/gopro-dashboard/`）
 詳細は `THIRD_PARTY_NOTICES.md` を参照してください。
 
 <br>

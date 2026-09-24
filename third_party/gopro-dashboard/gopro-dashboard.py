@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
+import bisect
 import datetime
 import sys
 from importlib import metadata
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from typing import Optional
+
+import gpxpy
 
 from gopro_overlay import timeseries_process, gpmd_filters
 from gopro_overlay.arguments import gopro_dashboard_arguments
@@ -16,6 +19,7 @@ from gopro_overlay.counter import ReasonCounter
 from gopro_overlay.date_overlap import DateRange
 from gopro_overlay.dimensions import dimension_from
 from gopro_overlay.execution import InProcessExecution
+from gopro_overlay.entry import Entry
 from gopro_overlay.ffmpeg import FFMPEG
 from gopro_overlay.ffmpeg_gopro import FFMPEGGoPro
 from gopro_overlay.ffmpeg_overlay import FFMPEGNull, FFMPEGOverlay, FFMPEGOverlayVideo
@@ -34,6 +38,7 @@ from gopro_overlay.privacy import PrivacyZone, NoPrivacyZone
 from gopro_overlay.progresstrack import ProgressBarProgress
 from gopro_overlay.timeunits import timeunits, Timeunit
 from gopro_overlay.timing import PoorTimer, Timers
+from gopro_overlay.timeseries import Timeseries
 from gopro_overlay.units import units
 from gopro_overlay.widgets.profile import WidgetProfiler
 
@@ -113,6 +118,113 @@ def combine_segment_framemeta(segment_gopros):
         offset += gopro.recording.video.duration
 
     return combined
+
+
+FALLBACK_GPX_MAX_GAP_SECONDS = 60
+
+
+def load_gps_logger_gpx(filepath: Path):
+    """Load GPSLogger-style GPX, including standard GPX 1.0 speed fields."""
+    with filepath.open("r", encoding="utf-8-sig") as gpx_file:
+        document = gpxpy.parse(gpx_file)
+
+    timeseries = Timeseries()
+    sources = {}
+    for track in document.tracks:
+        for segment in track.segments:
+            for point in segment.points:
+                if point.time is None or point.latitude is None or point.longitude is None:
+                    continue
+                source = point.source or "unknown"
+                sources[source] = sources.get(source, 0) + 1
+                timeseries.add(Entry(
+                    point.time,
+                    point=Point(point.latitude, point.longitude),
+                    alt=(units.Quantity(point.elevation, units.m)
+                         if point.elevation is not None else None),
+                    speed=(units.Quantity(point.speed, units.mps)
+                           if point.speed is not None else None),
+                    dop=(units.Quantity(point.horizontal_dilution, units.number)
+                         if point.horizontal_dilution is not None else None),
+                    gpsfix=GPSFix.LOCK_3D.value,
+                    gpslock=units.Quantity(GPSFix.LOCK_3D.value, units.number),
+                ))
+
+    if len(timeseries) == 0:
+        raise ValueError(f"No timestamped track points found in GPX file: {filepath}")
+
+    # Some GPSLogger network fixes do not include <speed>. Fill only across a
+    # short, recorded interval; never derive speed across a logger outage.
+    timeseries.check_modified()
+    dates = timeseries.dates
+    for index, point_date in enumerate(dates):
+        entry = timeseries.entries[point_date]
+        if entry.speed is not None:
+            continue
+        candidates = []
+        if index > 0:
+            candidates.append((dates[index - 1], point_date))
+        if index + 1 < len(dates):
+            candidates.append((point_date, dates[index + 1]))
+        candidates.sort(key=lambda pair: (pair[1] - pair[0]).total_seconds())
+        for start, end in candidates:
+            seconds = (end - start).total_seconds()
+            if seconds <= 0 or seconds > FALLBACK_GPX_MAX_GAP_SECONDS:
+                continue
+            first = timeseries.entries[start]
+            second = timeseries.entries[end]
+            distance, _ = timeseries_process.distance_azi_between(first.point, second.point)
+            entry.update(speed=distance / units.Quantity(seconds, units.seconds))
+            break
+
+    return timeseries, sources
+
+
+def merge_gps_logger_fallback(gpx_timeseries: Timeseries, frame_meta: FrameMeta):
+    """Replace only invalid GoPro GPS samples with nearby logger samples."""
+    gpx_timeseries.check_modified()
+    dates = gpx_timeseries.dates
+    counts = {"gopro": 0, "fallback": 0, "missing": 0}
+
+    frame_meta.check_modified()
+    for timestamp in frame_meta.framelist:
+        gopro_entry = frame_meta.frames[timestamp]
+        if gopro_entry.gpsfix in GPS_FIXED_VALUES:
+            counts["gopro"] += 1
+            continue
+
+        point_date = gopro_entry.dt
+        index = bisect.bisect_left(dates, point_date)
+        if index < len(dates) and dates[index] == point_date:
+            logger_entry = gpx_timeseries.entries[point_date]
+        elif index == 0 or index == len(dates):
+            counts["missing"] += 1
+            continue
+        else:
+            before = dates[index - 1]
+            after = dates[index]
+            if (after - before).total_seconds() > FALLBACK_GPX_MAX_GAP_SECONDS:
+                counts["missing"] += 1
+                continue
+            logger_entry = gpx_timeseries.get(point_date)
+
+        if logger_entry.point is None:
+            counts["missing"] += 1
+            continue
+
+        updates = {
+            "point": logger_entry.point,
+            "gpsfix": GPSFix.LOCK_3D.value,
+            "gpslock": units.Quantity(GPSFix.LOCK_3D.value, units.number),
+        }
+        for field in ("alt", "speed", "dop"):
+            value = getattr(logger_entry, field)
+            if value is not None:
+                updates[field] = value
+        gopro_entry.update(**updates)
+        counts["fallback"] += 1
+
+    return counts
 
 
 if __name__ == "__main__":
@@ -261,6 +373,39 @@ if __name__ == "__main__":
                         frame_meta = gopro.framemeta
 
                     gpmd_filters.poor_report(counter)
+
+                    fallback_gpx = globals().get("GOPRO_OVERLAY_FALLBACK_GPX")
+                    if fallback_gpx:
+                        fallback_path = assert_file_exists(Path(fallback_gpx))
+                        fallback_timeseries, fallback_sources = load_gps_logger_gpx(fallback_path)
+                        log(
+                            f"Fallback GPX:      {fmtdt(fallback_timeseries.min)} -> "
+                            f"{fmtdt(fallback_timeseries.max)}"
+                        )
+                        log(
+                            "Fallback sources:  "
+                            + ", ".join(
+                                f"{name}={count}"
+                                for name, count in sorted(fallback_sources.items())
+                            )
+                        )
+                        totals = {"gopro": 0, "fallback": 0, "missing": 0}
+                        fallback_targets = (
+                            [gopro.framemeta for gopro in segment_gopros]
+                            if segment_gopros else [frame_meta]
+                        )
+                        for fallback_target in fallback_targets:
+                            result = merge_gps_logger_fallback(
+                                fallback_timeseries, fallback_target
+                            )
+                            for name in totals:
+                                totals[name] += result[name]
+                        log(
+                            "GPS source samples: "
+                            f"GoPro={totals['gopro']}, "
+                            f"GPX fallback={totals['fallback']}, "
+                            f"unavailable={totals['missing']}"
+                        )
 
                     dimensions = recording.video.dimension
                     video_duration = recording.video.duration

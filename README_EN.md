@@ -62,6 +62,12 @@ The default is Japan (`Asia/Tokyo`). For footage recorded abroad, select the rec
 for example `Europe/Helsinki` for Finland. Region-based timezone names automatically account for daylight saving time.
 <br>
 
+### GPS Logger Fallback
+You can select a GPS logger `.gpx` file. Valid GoPro GPS samples remain primary; GPX data is used only
+for samples rejected because of missing lock, poor DOP, excessive speed, or another GPS validity filter.
+UTC timestamps align the data automatically, and logger gaps longer than 60 seconds are not interpolated.
+<br>
+
 ### Delete Intermediate Files
 If checked, unnecessary intermediate files will be removed after processing finishes.  
 <br>
@@ -158,7 +164,7 @@ Bundled components:
 
 - **Roboto font** — `googlefonts/roboto-3-classic` (OFL-1.1, `third_party/Roboto/`)  
 
-- **gopro-dashboard overlay script** — included unmodified from `time4tea/gopro-dashboard-overlay`
+- **gopro-dashboard overlay script** — based on `time4tea/gopro-dashboard-overlay`, with GUI integration changes
   (GPL-3.0, `third_party/gopro-dashboard/`)  
   See `THIRD_PARTY_NOTICES.md` for details.
 
