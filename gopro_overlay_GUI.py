@@ -1,4 +1,5 @@
 import os
+import ctypes
 import json
 import re
 import sys
@@ -39,7 +40,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -253,6 +254,85 @@ def setup_https_and_cache_for_frozen():
 
 if getattr(sys, "frozen", False):
     setup_https_and_cache_for_frozen()
+
+
+# =============================
+# Safe child processes for frozen Windows builds
+# =============================
+_ORIGINAL_POPEN = subprocess.Popen
+_WINDOWS_DLL_DIRECTORY_LOCK = threading.RLock()
+
+
+def _path_is_inside(path: str, directory: str) -> bool:
+    """Return True when a PATH entry points at or below ``directory``."""
+    if not path:
+        return False
+    try:
+        candidate = os.path.normcase(os.path.abspath(os.path.expandvars(path.strip('"'))))
+        parent = os.path.normcase(os.path.abspath(directory))
+        return os.path.commonpath((candidate, parent)) == parent
+    except (OSError, ValueError):
+        return False
+
+
+def _sanitized_child_environment(environment=None):
+    """Remove PyInstaller's temporary extraction directory from child PATH."""
+    child_environment = dict(os.environ if environment is None else environment)
+    extraction_dir = getattr(sys, "_MEIPASS", None)
+    if not extraction_dir:
+        return child_environment
+
+    path_key = next(
+        (key for key in child_environment if key.upper() == "PATH"),
+        "PATH",
+    )
+    path_value = child_environment.get(path_key, "")
+    child_environment[path_key] = os.pathsep.join(
+        entry
+        for entry in path_value.split(os.pathsep)
+        if not _path_is_inside(entry, extraction_dir)
+    )
+    return child_environment
+
+
+def _windows_dll_directory():
+    """Read the process DLL directory so it can be restored after spawning."""
+    kernel32 = ctypes.windll.kernel32
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = kernel32.GetDllDirectoryW(len(buffer), buffer)
+    return buffer.value if length else None
+
+
+def _frozen_windows_popen(*args, **kwargs):
+    """Start an external tool without leaking PyInstaller's DLL search path."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return _ORIGINAL_POPEN(*args, **kwargs)
+
+    child_kwargs = dict(kwargs)
+    child_kwargs["env"] = _sanitized_child_environment(child_kwargs.get("env"))
+
+    # PyInstaller calls SetDllDirectoryW(_MEIPASS). Windows child processes
+    # inherit that setting and may load incompatible bundled DLLs before their
+    # own main function starts (0xC0000142). Reset it only for process creation,
+    # then immediately restore the GUI's original lookup directory.
+    with _WINDOWS_DLL_DIRECTORY_LOCK:
+        kernel32 = ctypes.windll.kernel32
+        previous_directory = _windows_dll_directory()
+        if not kernel32.SetDllDirectoryW(None):
+            raise ctypes.WinError()
+        try:
+            return _ORIGINAL_POPEN(*args, **child_kwargs)
+        finally:
+            restore_directory = previous_directory if previous_directory else None
+            if not kernel32.SetDllDirectoryW(restore_directory):
+                raise ctypes.WinError()
+
+
+if IS_WIN and getattr(sys, "frozen", False):
+    # subprocess.run() resolves subprocess.Popen at call time. Installing the
+    # wrapper here also makes gopro-overlay's run/Popen paths safe, including
+    # the final streaming FFmpeg process.
+    subprocess.Popen = _frozen_windows_popen
 
 
 # =============================
