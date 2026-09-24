@@ -175,7 +175,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # Build targets
 # ------------------------------------------------------------
 APP_NAME = "GoProOverlayGUI"
-APP_VERSION = "1.8"
+APP_VERSION = "1.9"
 
 if IS_MAC:
     # macOS: build .app bundle, with ad-hoc signing for local use.
