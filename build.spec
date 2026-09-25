@@ -35,9 +35,11 @@ block_cipher = None
 ffmpeg_rel  = "third_party/ffmpeg/ffmpeg.exe"  if IS_WIN else "third_party/ffmpeg/ffmpeg"
 ffprobe_rel = "third_party/ffmpeg/ffprobe.exe" if IS_WIN else "third_party/ffmpeg/ffprobe"
 
+ffmpeg_dest = "ffmpeg-bin" if IS_WIN else "."
+
 COMMON_ASSETS = [
-    (ffmpeg_rel,  "."),
-    (ffprobe_rel, "."),
+    (ffmpeg_rel,  ffmpeg_dest),
+    (ffprobe_rel, ffmpeg_dest),
     ("third_party/Roboto/Roboto-Regular.ttf", "third_party/Roboto"),
     ("third_party/gopro-dashboard/gopro-dashboard.py", "."),
 ]
@@ -175,7 +177,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # Build targets
 # ------------------------------------------------------------
 APP_NAME = "GoProOverlayGUI"
-APP_VERSION = "1.9"
+APP_VERSION = "1.10"
 
 if IS_MAC:
     # macOS: build .app bundle, with ad-hoc signing for local use.

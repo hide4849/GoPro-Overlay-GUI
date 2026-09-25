@@ -40,7 +40,7 @@ import runpy
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.9"
+APP_VERSION = "1.10"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -209,8 +209,8 @@ def rpath(rel: str) -> Path:
     return base / rel
 
 # ffmpeg / ffprobe のファイル名をOSで切替
-ASSET_FFMPEG  = rpath("ffmpeg.exe"  if IS_WIN else "ffmpeg")
-ASSET_FFPROBE = rpath("ffprobe.exe" if IS_WIN else "ffprobe")
+ASSET_FFMPEG  = rpath("ffmpeg-bin/ffmpeg.exe"  if IS_WIN else "ffmpeg")
+ASSET_FFPROBE = rpath("ffmpeg-bin/ffprobe.exe" if IS_WIN else "ffprobe")
 
 # macOS: もし同梱バイナリが無ければ PATH の ffmpeg/ffprobe を使う（開発時の実行用）
 if not IS_WIN:
@@ -636,12 +636,15 @@ def run_dashboard_overlay(
     if not ASSET_FFMPEG.exists() or not ASSET_FFPROBE.exists():
         raise RuntimeError("Missing ffmpeg/ffprobe assets")
 
-    mei_dir = str(rpath("."))
+    # Keep FFmpeg/FFprobe in a dedicated directory. Windows always searches an
+    # executable's own directory for DLLs, so placing these tools next to
+    # PyInstaller's Python DLLs can make them fail during initialization.
+    ffmpeg_dir = str(ASSET_FFMPEG.parent)
 
     argv = [
         str(DASHBOARD_PY),
         "--show-ffmpeg",
-        "--ffmpeg-dir", mei_dir,
+        "--ffmpeg-dir", ffmpeg_dir,
         "--include", *overlay_components,
         "--units-speed", UNITS_SPEED,
         "--gps-speed-max", GPS_SPEED_MAX,
