@@ -2,6 +2,9 @@
 
 # GoPro Overlay GUI Tool
 
+バージョン1.10：最終オーバーレイも選択したHWエンコーダーを使用し、平均7.5Mbps（上限15Mbps）を目標に出力します。Softwareは従来のCPU設定です。GPS処理はD側ベースの元動画別読み込みを維持します。
+
+
 GoProのテレメトリ（GPS/速度など）やダッシュボード風の情報を、動画にオーバーレイ（合成）するためのGUIツールです。  
 ドライブ映像用と360度映像用の機能を持たせています。
 
@@ -172,7 +175,7 @@ PyInstaller -y build.spec
 
 - **Roboto フォント** — `googlefonts/roboto-3-classic`（OFL-1.1、`third_party/Roboto/`）  
 
-- **gopro-dashboard overlay script** — `time4tea/gopro-dashboard-overlay` を基にGUI統合用の変更を加えて同梱（GPL-3.0、`third_party/gopro-dashboard/`）
+- **gopro-dashboard overlay script** — `time4tea/gopro-dashboard-overlay` から無改変で同梱（GPL-3.0、`third_party/gopro-dashboard/`）
 詳細は `THIRD_PARTY_NOTICES.md` を参照してください。
 
 <br>

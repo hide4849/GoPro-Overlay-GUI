@@ -32,7 +32,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
-import runpy
+from dashboard_adapter import run_dashboard
 
 # ============================================================
 #  GoPro Overlay Tool (D&D)
@@ -227,6 +227,8 @@ if not IS_WIN:
 # Font (common: Roboto)
 ASSET_FONT    = rpath("third_party/Roboto/Roboto-Regular.ttf")
 DASHBOARD_PY  = rpath("gopro-dashboard.py")
+if not getattr(sys, "frozen", False):
+    DASHBOARD_PY = rpath("third_party/gopro-dashboard/gopro-dashboard.py")
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -467,7 +469,7 @@ def detect_gpmd_stream_index(ffprobe: Path, media_file: Path) -> str:
 
 
 # =============================
-# Logging stream for runpy
+# Logging stream for dashboard execution
 # =============================
 class _LogStream:
     def __init__(self, log):
@@ -623,6 +625,7 @@ def run_dashboard_overlay(
     overlay_components: list[str],
     telemetry_segments: list[Path] | None = None,
     fallback_gpx: Path | None = None,
+    encoder: str = "cpu",
 ):
     try:
         selected_tz = ZoneInfo(timezone_name)
@@ -695,7 +698,10 @@ def run_dashboard_overlay(
     sys.stderr = _LogStream(log)
 
     try:
-        init_globals = {}
+        from dashboard_adapter import hardware_output_options
+        output_options = hardware_output_options(encoder)
+        init_globals = {"GOPRO_OVERLAY_OUTPUT_OPTIONS": output_options}
+        log(f"Overlay encoder: {encoder}; " + ("target 7.5Mbps" if output_options else "CPU defaults"))
         if fallback_gpx:
             init_globals["GOPRO_OVERLAY_FALLBACK_GPX"] = str(fallback_gpx)
             log(f"Fallback GPS logger: {fallback_gpx}")
@@ -710,9 +716,8 @@ def run_dashboard_overlay(
             ]
             log(f"Telemetry segments: {len(telemetry_segments)}")
 
-        runpy.run_path(
+        run_dashboard(
             str(DASHBOARD_PY),
-            run_name="__main__",
             init_globals=init_globals,
         )
     except Exception:
@@ -1858,6 +1863,7 @@ class App(TkinterDnD.Tk):
             self.selected_overlay_components,
             telemetry_segments=files,
             fallback_gpx=self.selected_fallback_gpx,
+            encoder=self.encoder_var.get(),
         )
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
@@ -1966,6 +1972,7 @@ class App(TkinterDnD.Tk):
             self.selected_timezone,
             self.selected_overlay_components,
             fallback_gpx=self.selected_fallback_gpx,
+            encoder=self.encoder_var.get(),
         )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)
@@ -2157,6 +2164,7 @@ class App(TkinterDnD.Tk):
             self.selected_timezone,
             self.selected_overlay_components,
             fallback_gpx=self.selected_fallback_gpx,
+            encoder=self.encoder_var.get(),
         )
 
         self.log(f"■ Overlay Finish: {out_mp4.name}")

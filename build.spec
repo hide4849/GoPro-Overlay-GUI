@@ -42,6 +42,7 @@ COMMON_ASSETS = [
     (ffprobe_rel, ffmpeg_dest),
     ("third_party/Roboto/Roboto-Regular.ttf", "third_party/Roboto"),
     ("third_party/gopro-dashboard/gopro-dashboard.py", "."),
+    ("third_party/gopro-dashboard/upstream.json", "."),
 ]
 
 def _must_exist(rel_path: str) -> str:
@@ -56,6 +57,8 @@ def _must_exist(rel_path: str) -> str:
 datas = []
 binaries = []
 hiddenimports = []
+hiddenimports += ["dashboard_extensions"]
+datas += copy_metadata("gopro-overlay")
 
 # Always include common assets
 for src, dest in COMMON_ASSETS:
@@ -88,7 +91,7 @@ if IS_MAC:
     datas += _add_tree_files(TK_SRC, "_tk_data")
 
     # ---- Hidden imports ----
-    # gopro-dashboard.py is executed via runpy.run_path, so make sure dependencies are included.
+    # The upstream dashboard is executed by dashboard_adapter; collect its dependencies.
     hiddenimports += collect_submodules("gopro_overlay")
     datas += collect_data_files("gopro_overlay", include_py_files=True)
     datas += collect_data_files("tzdata")

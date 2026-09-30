@@ -2,6 +2,9 @@
 
 # GoPro Overlay GUI Tool
 
+Version 1.10: final overlay uses the selected hardware encoder with a 7.5Mbps target and 15Mbps peak. Software retains CPU defaults. Per-source telemetry processing is preserved.
+
+
 
 A GUI tool that overlays (composites) GoPro telemetry (GPS / speed, etc.) and dashboard-style info onto your videos.  
 It includes features for both **drive videos** and **360° videos**.
