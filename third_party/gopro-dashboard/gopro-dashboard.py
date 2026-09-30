@@ -152,17 +152,23 @@ if __name__ == "__main__":
                         duration = recording.video.duration
 
                         fns = {
-                            "file-created": lambda f: f.ctime,
-                            "file-modified": lambda f: f.mtime,
-                            "file-accessed": lambda f: f.atime
+                            "file-created": lambda: recording.file.ctime,
+                            "file-modified": lambda: recording.file.mtime,
+                            "file-accessed": lambda: recording.file.atime,
+                            "video-created": lambda: recording.creation_time,
                         }
 
                         if args.video_time_start:
-                            start_date = fns[args.video_time_start](recording.file)
+                            start_date = fns[args.video_time_start]()
+                            if start_date is None:
+                                fatal("No creation_time found in video metadata. Try --video-time-start file-modified instead.")
                             end_date = start_date + duration.timedelta()
 
                         if args.video_time_end:
-                            start_date = fns[args.video_time_end](recording.file) - duration.timedelta()
+                            start_date = fns[args.video_time_end]()
+                            if start_date is None:
+                                fatal("No creation_time found in video metadata. Try --video-time-end file-modified instead.")
+                            start_date = start_date - duration.timedelta()
                             end_date = start_date + duration.timedelta()
 
                     else:

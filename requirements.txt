@@ -28,8 +28,7 @@ flexcache==0.3
 flexparser==0.4
 frozenlist==1.8.0
 geographiclib==1.52
-geotiler==0.15.0
-gopro-overlay==0.129.0
+gopro-overlay==0.134.0
 gpxpy==1.6.1
 idna==3.11
 multidict==6.7.1

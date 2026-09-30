@@ -33,7 +33,7 @@ def _replace_once(source, old, new):
 def adapt_source(source):
     source = _replace_once(
         source, '    args = gopro_dashboard_arguments()',
-        '    from dashboard_extensions import TelemetrySession\n'
+        '    from dashboard_extensions import TelemetrySession, process_segment_deltas\n'
         '    gui_telemetry = TelemetrySession(\n'
         '        globals().get("GOPRO_OVERLAY_TELEMETRY_SEGMENTS"),\n'
         '        globals().get("GOPRO_OVERLAY_FALLBACK_GPX"), log)\n'
@@ -47,6 +47,10 @@ def adapt_source(source):
         raise ValueError("Upstream telemetry processing block changed")
     first, last = source.index(start), source.index(end) + len(end)
     block = source[first:last]
+    if block.count("frame_meta.process_deltas(") != 2:
+        raise ValueError("Upstream delta processing integration points changed")
+    block = block.replace("frame_meta.process_deltas(",
+                          "process_segment_deltas(frame_meta, ")
     # Keep upstream processing operations, but apply them separately to each
     # recording so smoothing and speed calculations never cross boundaries.
     wrapped = ('                for frame_meta in gui_telemetry.frames(frame_meta):\n'

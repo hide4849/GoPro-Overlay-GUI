@@ -1,5 +1,6 @@
 {
-  "version": "0.129.0",
-  "url": "https://raw.githubusercontent.com/time4tea/gopro-dashboard-overlay/v0.129.0/bin/gopro-dashboard.py",
-  "sha256": "efbebb92f83788f1cb60d49053cfdafd5791d024ad019f8fcfccb4ede3bc45b4"
+  "version": "0.134.0",
+  "url": "https://raw.githubusercontent.com/time4tea/gopro-dashboard-overlay/8e26ee5b452c6aefa38aa6d08557f15139b61e6c/bin/gopro-dashboard.py",
+  "commit": "8e26ee5b452c6aefa38aa6d08557f15139b61e6c",
+  "sha256": "ee0ca2029e83dea53a3b03787d1f5bb2f8c9918ff157e1d5701d3d1fc2ec5166"
 }

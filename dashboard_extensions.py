@@ -12,6 +12,25 @@ from gopro_overlay.timeseries import Timeseries
 from gopro_overlay.timeunits import timeunits
 from gopro_overlay.units import units
 
+def process_segment_deltas(frame_meta, processor, skip=1, filter_fn=lambda e: True):
+    """Avoid 0.134.0's negative indices in segments shorter than twice skip."""
+    frame_meta.check_modified()
+    if skip < 1:
+        raise ValueError("skip must be positive")
+    count = len(frame_meta.framelist)
+    if count >= 2 * skip:
+        return frame_meta.process_deltas(processor, skip=skip, filter_fn=filter_fn)
+    pairs = [(i, i + skip, i) for i in range(max(0, count - skip))]
+    pairs += [(i - skip, i, i) for i in range(max(skip, count - skip), count)]
+    for first, last, target in pairs:
+        a = frame_meta.frames[frame_meta.framelist[first]]
+        b = frame_meta.frames[frame_meta.framelist[last]]
+        if filter_fn(a) and filter_fn(b):
+            updates = processor(a, b, skip)
+            if updates:
+                frame_meta.frames[frame_meta.framelist[target]].update(**updates)
+
+
 class TelemetrySession:
     """Per-run state; no global library patches or retained recordings."""
 

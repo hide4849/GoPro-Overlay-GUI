@@ -96,14 +96,8 @@ if IS_MAC:
     datas += collect_data_files("gopro_overlay", include_py_files=True)
     datas += collect_data_files("tzdata")
 
-    hiddenimports += ["pkg_resources"]
-    try:
-        datas += copy_metadata("setuptools")
-    except Exception:
-        pass
-
     # Often-missed deps for map tiles / images / requests stack
-    for pkg in ["geotiler", "PIL", "requests", "urllib3", "certifi", "charset_normalizer", "idna", "tkinterdnd2"]:
+    for pkg in ["PIL", "requests", "urllib3", "certifi", "charset_normalizer", "idna", "tkinterdnd2"]:
         try:
             hiddenimports += collect_submodules(pkg)
             datas += collect_data_files(pkg)
@@ -111,7 +105,7 @@ if IS_MAC:
             # If a package isn't installed, fail fast (it's likely required at runtime).
             raise
 
-    for _m in ["geotiler", "Pillow", "requests", "urllib3", "certifi", "charset-normalizer", "idna"]:
+    for _m in ["Pillow", "requests", "urllib3", "certifi", "charset-normalizer", "idna"]:
         try:
             datas += copy_metadata(_m)
         except Exception:
@@ -125,13 +119,11 @@ else:
         "gopro_overlay",
         "tkinterdnd2",
         "PIL",
-        "geotiler",
         "requests",
         "urllib3",
         "certifi",
         "idna",
         "charset_normalizer",
-        "setuptools",
         "tzdata",
     ]
     for pkg in pkgs:
@@ -140,10 +132,8 @@ else:
         binaries += b
         hiddenimports += h
 
-    hiddenimports += ["pkg_resources", "setuptools", "setuptools._vendor"]
-
     # Metadata (deps sometimes look these up)
-    for md in ["gopro-overlay", "setuptools", "geotiler", "requests", "urllib3", "certifi", "charset-normalizer", "idna"]:
+    for md in ["gopro-overlay", "requests", "urllib3", "certifi", "charset-normalizer", "idna"]:
         try:
             datas += copy_metadata(md)
         except Exception:

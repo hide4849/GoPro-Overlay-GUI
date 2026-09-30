@@ -2,6 +2,10 @@
 
 # GoPro Overlay GUI Tool
 
+Uses gopro-overlay 0.134.0 (upstream main: `8e26ee5`).
+Upstream changes are integrated through the Python dependency and bundled dashboard, preserving the GUI repository layout.
+The GUI extension handles a 0.134.0 boundary issue in speed/gradient calculations for short video segments.
+
 Version 1.10: final overlay uses the selected hardware encoder with a 7.5Mbps target and 15Mbps peak. Software retains CPU defaults. Per-source telemetry processing is preserved.
 
 
