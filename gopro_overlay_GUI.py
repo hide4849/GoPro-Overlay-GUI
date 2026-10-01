@@ -498,12 +498,34 @@ class _LogStream:
 # =============================
 # Command runner (progress)
 # =============================
-def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, progress_time_scale: float = 1.0):
+def concat_duration(ffprobe, files):
+    """Use the sum of all inputs; a concat list is not a media file."""
+    import math
+    total = 0.0
+    for path in files:
+        try:
+            result = subprocess.run(
+                [str(ffprobe), "-v", "error", "-show_entries", "format=duration",
+                 "-of", "json", str(path)],
+                capture_output=True, text=True, check=True, timeout=30,
+                creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            duration = float(json.loads(result.stdout)["format"]["duration"])
+            if not math.isfinite(duration) or duration <= 0:
+                return None
+            total += duration
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            return None
+    return total or None
+
+
+def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, progress_time_scale: float = 1.0, total_duration_sec=None):
     log(f"\nCMD>> {' '.join(str(x) for x in cmd)}\n")
 
     # total duration estimation (best effort)
-    total_sec = None
-    for i, part in enumerate(cmd):
+    total_sec = total_duration_sec
+    is_concat = any(cmd[i:i + 2] == ["-f", "concat"] for i in range(len(cmd) - 1))
+    for i, part in enumerate(cmd if total_sec is None and not is_concat else []):
         if part == "-i" and i + 1 < len(cmd):
             input_file = cmd[i + 1]
             try:
@@ -536,6 +558,7 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, prog
         on_proc(p)
 
     last_percent = -1
+    log("  0% | Starting..." if total_sec else "Progress: total duration unavailable")
 
     for line in p.stdout:
         if stop_event and stop_event.is_set():
@@ -553,12 +576,15 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, prog
 
             if "time=" in part:
                 m = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", part)
-                if m and total_sec:
+                if m and not total_sec:
+                    log(part)
+                elif m and total_sec:
                     h, m_, s = m.groups()
                     current_sec_raw = int(h) * 3600 + int(m_) * 60 + float(s)
                     current_sec = current_sec_raw * float(progress_time_scale)
                     percent = int((current_sec / total_sec) * 100)
-                    percent = max(0, min(100, percent))
+                    # Reserve 100% for successful process exit, including muxing.
+                    percent = max(0, min(99, percent))
 
                     time_str = f"{int(h):02d}:{int(m_):02d}:{float(s):05.2f}"
 
@@ -611,6 +637,8 @@ def run_cmd(cmd: list[str], log, check=True, stop_event=None, on_proc=None, prog
 
     if check and rc != 0:
         raise RuntimeError(f"Command failed ({rc})")
+    if rc == 0:
+        log("100% | Completed")
     return rc
 
 
@@ -1743,11 +1771,13 @@ class App(TkinterDnD.Tk):
             # MP4 rejects. Preserve only the telemetry (gpmd) stream.
             concat_cmd += ["-map", f"0:{gpmd_index}"]
         concat_cmd += ["-c", "copy", str(merged_mp4)]
+        total_duration = concat_duration(self.ffprobe, files)
         run_cmd(
             concat_cmd,
             self.log,
             stop_event=self.stop_event,
             on_proc=self._set_current_proc,
+            total_duration_sec=total_duration,
         )
 
         # 2) transcode if 2K
