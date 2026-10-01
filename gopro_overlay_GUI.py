@@ -33,6 +33,8 @@ from tkinter import ttk, messagebox, filedialog
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from dashboard_adapter import run_dashboard
+from dji_flightlog import LOG_FIELDS, DEFAULT_LOG_FIELDS, FlightLog
+from dji_hud import DJI_ITEMS, create_hud_widget
 
 # ============================================================
 #  GoPro Overlay Tool (D&D)
@@ -40,7 +42,7 @@ from dashboard_adapter import run_dashboard
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.10"
+APP_VERSION = "1.14"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -72,12 +74,52 @@ OVERLAY_COMPONENTS = (
     ("altitude", "Altitude"),
     ("moving_map", "Moving Map"),
     ("journey_map", "Journey Map"),
-    ("dji_elapsed", "DJI Recording Time"),
-    ("dji_relative_alt", "DJI Relative Altitude"),
-    ("dji_vertical_speed", "DJI Vertical Speed"),
-    ("dji_start_distance", "DJI Distance from Rec Start"),
-    ("dji_home_distance", "DJI Distance from Home"),
-)
+) + tuple(DJI_ITEMS.items())
+
+DJI_ITEM_LABELS = {
+    "date_and_time": "日付・時刻",
+    "gps_info": "GPS座標",
+    "big_mph": "速度（km/h）",
+    "altitude": "標高",
+    "moving_map": "現在地マップ",
+    "journey_map": "飛行経路マップ",
+    "dji_elapsed": "動画の経過時間（秒）",
+    "dji_relative_alt": "相対高度・SRT（m）",
+    "dji_vertical_speed": "上昇・下降速度（m/s）",
+    "dji_start_distance": "録画開始地点からの距離（m）",
+    "dji_home_distance": "ホーム地点からの距離（m）",
+    "dji_speed": "水平速度（km/h）",
+    "dji_battery": "バッテリー残量（%）",
+    "dji_temperature": "バッテリー温度（℃）",
+    "dji_voltage": "バッテリー電圧（V）",
+    "dji_current": "バッテリー電流（A）",
+    "dji_flight_time": "飛行経過時間（秒）",
+    "dji_log_alt": "相対高度・飛行ログ（m）",
+    "dji_climb": "上昇・下降速度・飛行ログ（m/s）",
+    "dji_distance": "累積移動距離（m）",
+    "dji_satellites": "GPS衛星数",
+    "dji_uplink": "上り通信強度（%）",
+    "dji_downlink": "下り通信強度（%）",
+    "dji_pitch": "機体の前後の傾き（°）",
+    "dji_roll": "機体の左右の傾き（°）",
+    "dji_yaw": "機体の向き（°）",
+    "dji_gimbal_pitch": "カメラの上下角度（°）",
+    "dji_capacity": "バッテリー残容量（mAh）",
+    "dji_full_capacity": "満充電容量（mAh）",
+    "dji_cycles": "バッテリー放電回数",
+    "dji_recording": "録画状態（0：停止／1：録画中）",
+    "dji_record_time": "カメラの録画経過時間（秒）",
+    "dji_rc_aileron": "スティック・左右移動（生値）",
+    "dji_rc_elevator": "スティック・前後移動（生値）",
+    "dji_rc_throttle": "スティック・上昇下降（生値）",
+    "dji_rc_rudder": "スティック・旋回（生値）",
+    "dji_mode": "飛行モード",
+    "dji_return_status": "帰還状態",
+    "dji_warning": "警告",
+    "dji_notice": "通知",
+}
+
+DJI_ITEM_LABELS.update(DJI_ITEMS)
 
 # --- GPS sanity caps ---
 GPS_SPEED_MAX = "200"
@@ -216,6 +258,13 @@ def rpath(rel: str) -> Path:
 # ffmpeg / ffprobe のファイル名をOSで切替
 ASSET_FFMPEG  = rpath("ffmpeg-bin/ffmpeg.exe"  if IS_WIN else "ffmpeg")
 ASSET_FFPROBE = rpath("ffmpeg-bin/ffprobe.exe" if IS_WIN else "ffprobe")
+if not getattr(sys, "frozen", False):
+    source_ffmpeg = rpath("third_party/ffmpeg/ffmpeg.exe" if IS_WIN else "third_party/ffmpeg/ffmpeg")
+    source_ffprobe = rpath("third_party/ffmpeg/ffprobe.exe" if IS_WIN else "third_party/ffmpeg/ffprobe")
+    if source_ffmpeg.is_file():
+        ASSET_FFMPEG = source_ffmpeg
+    if source_ffprobe.is_file():
+        ASSET_FFPROBE = source_ffprobe
 
 # macOS: もし同梱バイナリが無ければ PATH の ffmpeg/ffprobe を使う（開発時の実行用）
 if not IS_WIN:
@@ -661,6 +710,9 @@ def run_dashboard_overlay(
     encoder: str = "cpu",
     dji_home=None,
     dji_enabled=False,
+    dji_flight_log=None,
+    dji_video_start=None,
+    dji_stick_mode=2,
 ):
     try:
         selected_tz = ZoneInfo(timezone_name)
@@ -681,12 +733,13 @@ def run_dashboard_overlay(
 
     from dji_telemetry import sidecar, FIELDS, add_layout
     is_dji = dji_enabled
-    if is_dji and not all(sidecar(path) for path in (telemetry_segments or [input_mp4])):
+    if is_dji and not dji_flight_log and not all(sidecar(path) for path in (telemetry_segments or [input_mp4])):
         raise ValueError("DJI mode requires a matching SRT beside every MP4")
     overlay_components = [name for name in overlay_components
                           if (is_dji or name not in FIELDS)
                           and (not is_dji or name not in ('gps-lock', 'gps_dop'))
-                          and (name != 'dji_home_distance' or dji_home is not None)]
+                          and (name != 'dji_home_distance' or dji_home is not None or dji_flight_log)
+                          and (name not in LOG_FIELDS or dji_flight_log or name in ("dji_log_alt", "dji_climb"))]
     if not overlay_components:
         raise ValueError("No selected overlay items are available for this input")
     argv = [
@@ -712,6 +765,14 @@ def run_dashboard_overlay(
     original_metric_accessor = layout_xml.metric_accessor_from
     original_load_xml_layout = layout_xml.load_xml_layout
     original_ffmpeg_path = FFMPEG._path
+    from dji_flightlog import create_text_metric
+    original_dji_text = getattr(layout_xml.Widgets, 'create_dji_text', None)
+    layout_xml.Widgets.create_dji_text = create_text_metric
+    hud_originals = {}
+    for kind in ("dji_signal", "dji_mode", "dji_sticks"):
+        attribute = "create_" + kind
+        hud_originals[attribute] = getattr(layout_xml.Widgets, attribute, None)
+        setattr(layout_xml.Widgets, attribute, create_hud_widget)
 
     def date_formatter_with_selected_timezone(element, entry):
         format_string = layout_xml.attrib(element, "format")
@@ -724,7 +785,9 @@ def run_dashboard_overlay(
         xml_text = original_load_xml_layout(filepath)
         if filepath.name.startswith("default-"):
             xml_text = add_gps_dop_to_layout(xml_text)
-            return add_layout(xml_text, dji_home) if is_dji else xml_text
+            size_match = re.search(r"(\d+)x(\d+)", filepath.name)
+            scale = int(size_match[1]) / 1920 if size_match else 1
+            return add_layout(xml_text, dji_home, overlay_components, bool(dji_flight_log), scale, dji_stick_mode) if is_dji else xml_text
         return xml_text
 
     layout_xml.metric_accessor_from = lambda name: ((lambda e: getattr(e, name)) if name in FIELDS else original_metric_accessor(name))
@@ -749,7 +812,9 @@ def run_dashboard_overlay(
         from dashboard_adapter import hardware_output_options
         output_options = hardware_output_options(encoder)
         init_globals = {"GOPRO_OVERLAY_OUTPUT_OPTIONS": output_options,
-                        "GOPRO_OVERLAY_DJI_OPTIONS": {"timezone": timezone_name, "home": dji_home, "enabled": dji_enabled}}
+                        "GOPRO_OVERLAY_DJI_OPTIONS": {"timezone": timezone_name, "home": dji_home, "enabled": dji_enabled,
+                                                     "flight_log": str(dji_flight_log) if dji_flight_log else None,
+                                                     "video_start": dji_video_start}}
         log(f"Overlay encoder: {encoder}; " + ("target 7.5Mbps" if output_options else "CPU defaults"))
         if fallback_gpx:
             init_globals["GOPRO_OVERLAY_FALLBACK_GPX"] = str(fallback_gpx)
@@ -777,6 +842,15 @@ def run_dashboard_overlay(
         layout_xml.date_formatter_from_element = original_date_formatter
         layout_xml.load_xml_layout = original_load_xml_layout
         layout_xml.metric_accessor_from = original_metric_accessor
+        for attribute, original in hud_originals.items():
+            if original is None:
+                delattr(layout_xml.Widgets, attribute)
+            else:
+                setattr(layout_xml.Widgets, attribute, original)
+        if original_dji_text is None:
+            del layout_xml.Widgets.create_dji_text
+        else:
+            layout_xml.Widgets.create_dji_text = original_dji_text
         FFMPEG._path = original_ffmpeg_path
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
 
@@ -820,11 +894,19 @@ class App(TkinterDnD.Tk):
         )
         self.selected_timezone = "Asia/Tokyo"
         self.overlay_component_vars = {
-            name: tk.BooleanVar(value=True) for name, _ in OVERLAY_COMPONENTS
+            name: tk.BooleanVar(value=name not in LOG_FIELDS or name in DEFAULT_LOG_FIELDS)
+            for name, _ in OVERLAY_COMPONENTS
         }
         self.selected_overlay_components = [name for name, _ in OVERLAY_COMPONENTS]
         self.dji_home_var = tk.StringVar(value="")
         self.selected_dji_home = None
+        decoded = Path(sys.executable if getattr(sys, "frozen", False) else __file__).with_name("flightrecord-decoded.json")
+        self.dji_log_var = tk.StringVar(value=str(decoded) if decoded.is_file() else "")
+        self.dji_video_start_var = tk.StringVar(value="")
+        self.selected_dji_log = None
+        self.selected_dji_video_start = None
+        self.dji_stick_mode_var = tk.StringVar(value="2")
+        self.selected_dji_stick_mode = 2
         self.fallback_gpx_var = tk.StringVar(value="")
         self.selected_fallback_gpx: Path | None = None
 
@@ -910,16 +992,32 @@ class App(TkinterDnD.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True, padx=10, pady=10)
 
-        mid.columnconfigure(0, weight=1)  # ← 左
-        mid.columnconfigure(1, weight=4)  # ← 右（ログを広めに）
+        mid.columnconfigure(0, weight=1, minsize=540)
+        mid.columnconfigure(1, weight=1, minsize=360)
 
         mid.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(mid)
-        left.grid(row=0, column=0, sticky="nsew")
+        left_host = ttk.Frame(mid)
+        left_host.grid(row=0, column=0, sticky="nsew")
+        options_canvas = tk.Canvas(left_host, width=540, highlightthickness=0)
+        options_scroll = ttk.Scrollbar(left_host, orient="vertical", command=options_canvas.yview)
+        options_scroll.pack(side="right", fill="y")
+        options_canvas.pack(side="left", fill="both", expand=True)
+        options_canvas.configure(yscrollcommand=options_scroll.set)
+        left = ttk.Frame(options_canvas)
+        options_window = options_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda event: options_canvas.configure(scrollregion=options_canvas.bbox("all")))
+        options_canvas.bind("<Configure>", lambda event: options_canvas.itemconfigure(options_window, width=event.width))
 
         right = ttk.Frame(mid)
         right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        self.right_panes = ttk.Panedwindow(right, orient="vertical")
+        self.right_panes.pack(fill="both", expand=True)
+        file_panel = ttk.LabelFrame(self.right_panes, text="ファイルリスト")
+        log_panel = ttk.LabelFrame(self.right_panes, text="処理ログ")
+        self.right_panes.add(file_panel, weight=1)
+        self.right_panes.add(log_panel, weight=1)
+        self.telemetry_options_anchor = ttk.Frame(left)
 
 
         # ---- LEFT: Mode + Shared Options ----
@@ -931,7 +1029,7 @@ class App(TkinterDnD.Tk):
             ("concat", "DRC(Merge + Overlay)"),
             ("batch", "360 Overlay (.mp4 + .360)"),
             ("overlay", "Overlay (MP4)"),
-            ("dji", "DJI (MP4 + SRT)"),
+            ("dji", "DJI (SRT / Flight Log)"),
         )):
             button = ttk.Radiobutton(mode_box, text=label, variable=self.mode_var, value=value)
             self.mode_buttons.append(button)
@@ -1020,6 +1118,7 @@ class App(TkinterDnD.Tk):
         ).grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
 
         overlay_box = ttk.LabelFrame(left, text="Overlay Items")
+        self.overlay_box = overlay_box
         overlay_box.pack(anchor="w", fill="x", pady=(0, 8))
         self.overlay_checkbuttons = {}
         for index, (name, label) in enumerate(OVERLAY_COMPONENTS):
@@ -1037,11 +1136,22 @@ class App(TkinterDnD.Tk):
                 sticky="w",
             )
 
-        dji_box = ttk.LabelFrame(left, text="DJI SRT (same filename as MP4; detected automatically)")
+        dji_box = ttk.LabelFrame(left, text="DJI Flight Log / SRT")
         self.dji_box = dji_box
         dji_box.pack(anchor="w", fill="x", pady=(0, 8))
-        ttk.Label(dji_box, text="Home lat,lon (optional):").pack(side="left", padx=8)
-        ttk.Entry(dji_box, textvariable=self.dji_home_var, width=30).pack(side="left", padx=8)
+        ttk.Label(dji_box, text="Decoded flight log (.json):").grid(row=0, column=0, padx=8, pady=4, sticky="w")
+        ttk.Entry(dji_box, textvariable=self.dji_log_var, width=50).grid(row=0, column=1, sticky="ew")
+        ttk.Button(dji_box, text="Browse", command=self.browse_dji_log).grid(row=0, column=2, padx=6)
+        ttk.Button(dji_box, text="Clear", command=lambda: self.dji_log_var.set("")).grid(row=0, column=3, padx=6)
+        ttk.Label(dji_box, text="Video start (flight elapsed seconds):").grid(row=1, column=0, padx=8, pady=4, sticky="w")
+        ttk.Entry(dji_box, textvariable=self.dji_video_start_var, width=16).grid(row=1, column=1, sticky="w")
+        ttk.Label(dji_box, text="Blank = sync with matching SRT; without SRT, enter seconds.").grid(row=2, column=0, columnspan=4, padx=8, sticky="w")
+        ttk.Label(dji_box, text="Home lat,lon (optional override):").grid(row=3, column=0, padx=8, pady=4, sticky="w")
+        ttk.Entry(dji_box, textvariable=self.dji_home_var, width=30).grid(row=3, column=1, sticky="w")
+        ttk.Button(dji_box, text="Recommended HUD", command=self.dji_recommended_hud).grid(row=3, column=2, columnspan=2, padx=6)
+        ttk.Label(dji_box, text="スティック配置（送信機と合わせる）:").grid(row=4, column=0, padx=8, pady=4, sticky="w")
+        ttk.Combobox(dji_box, textvariable=self.dji_stick_mode_var, values=("1", "2", "3"), state="readonly", width=5).grid(row=4, column=1, sticky="w")
+        dji_box.columnconfigure(1, weight=1)
         fallback_box = ttk.LabelFrame(left, text="GPS Logger Fallback")
         self.fallback_box = fallback_box
         fallback_box.pack(anchor="w", fill="x", pady=(0, 8))
@@ -1066,7 +1176,8 @@ class App(TkinterDnD.Tk):
         fallback_box.columnconfigure(1, weight=1)
 
         # ---- STACK AREA (mode-specific UI) ----
-        self.stack = ttk.Frame(left)
+        self.telemetry_options_anchor.pack(fill="x")
+        self.stack = ttk.Frame(file_panel)
         self.stack.pack(fill="both", expand=True)
 
         self.concat_frame = ttk.Frame(self.stack)
@@ -1084,8 +1195,7 @@ class App(TkinterDnD.Tk):
         self._build_dji_ui(self.dji_frame)
 
         # ---- RIGHT: Log ----
-        ttk.Label(right, text="Log").pack(anchor="w")
-        self.logbox = tk.Text(right)
+        self.logbox = tk.Text(log_panel, height=15, width=50, wrap="word")
         self.logbox.pack(fill="both", expand=True, pady=(0, 2))
 
     def _build_concat_ui(self, parent: ttk.Frame):
@@ -1163,7 +1273,7 @@ class App(TkinterDnD.Tk):
         btns = ttk.Frame(parent)
         btns.pack(fill="x", pady=(0, 6))
 
-        ttk.Button(btns, text="Add MP4 + SRT", command=self.dji_add_files_dialog).pack(side="left")
+        ttk.Button(btns, text="Add MP4 / SRT", command=self.dji_add_files_dialog).pack(side="left")
         self.dji_start_btn = ttk.Button(btns, text="Start", command=self.start)
         self.dji_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.dji_clear_files).pack(side="left")
@@ -1171,7 +1281,7 @@ class App(TkinterDnD.Tk):
         ttk.Label(parent, textvariable=self.dji_files_info).pack(anchor="w")
 
         self.dji_tree = ttk.Treeview(parent, columns=("file", "status"), show="headings", height=16)
-        self.dji_tree.heading("file", text="DJI MP4 + matching SRT")
+        self.dji_tree.heading("file", text="DJI MP4 (SRT or flight log)")
         self.dji_tree.heading("status", text="Status")
         self.dji_tree.column("file", width=100)
         self.dji_tree.column("status", width=50, anchor="center")
@@ -1183,14 +1293,26 @@ class App(TkinterDnD.Tk):
     # ---------- Mode switch ----------
     def _switch_mode(self):
         mode = self.mode_var.get()
+        if mode == "dji" and not getattr(self, "_dji_profile_initialized", False):
+            self.dji_recommended_hud()
+            self._dji_profile_initialized = True
         self.dji_box.pack_forget()
         self.fallback_box.pack_forget()
         box = self.dji_box if mode == "dji" else self.fallback_box
-        box.pack(before=self.stack, anchor="w", fill="x", pady=(0, 8))
+        box.pack(before=self.telemetry_options_anchor, anchor="w", fill="x", pady=(0, 8))
+        visible_index = 0
         for name, checkbox in self.overlay_checkbuttons.items():
+            english_label = dict(OVERLAY_COMPONENTS)[name]
+            checkbox.config(text=DJI_ITEM_LABELS.get(name, english_label) if mode == "dji" else english_label)
             available = (name.startswith("dji_") and mode == "dji") or (
                 not name.startswith("dji_") and not (mode == "dji" and name in ("gps-lock", "gps_dop")))
-            checkbox.grid() if available else checkbox.grid_remove()
+            if available:
+                checkbox.grid(row=visible_index // (2 if mode == "dji" else 4),
+                              column=visible_index % (2 if mode == "dji" else 4))
+                visible_index += 1
+            else:
+                checkbox.grid_remove()
+        self.overlay_box.config(text="オーバーレイ項目" if mode == "dji" else "Overlay Items")
         if mode == "concat":
             self.concat_frame.tkraise()
             self.concat_start_btn.config(text="Start", command=self.start)
@@ -1661,6 +1783,25 @@ class App(TkinterDnD.Tk):
                 self.overlay_tree.set(iid, "status", status)
         self.after(0, _update)
 
+    def browse_dji_log(self):
+        path = filedialog.askopenfilename(title="Select decoded DJI flight log", filetypes=[("Decoded flight log", "*.json")])
+        if path:
+            try:
+                FlightLog(path)
+            except (ValueError, OSError) as e:
+                messagebox.showerror("Invalid flight log", str(e))
+                return
+            self.dji_log_var.set(path)
+            self.dji_recommended_hud()
+            self.refresh_dji_list()
+
+    def dji_recommended_hud(self):
+        recommended = DEFAULT_LOG_FIELDS | {"date_and_time", "gps_info", "big_mph", "journey_map", "dji_home_distance"}
+        if not self.dji_log_var.get().strip():
+            recommended = {"date_and_time", "gps_info", "big_mph", "journey_map", "dji_log_alt", "dji_climb"}
+        for name, variable in self.overlay_component_vars.items():
+            variable.set(name in recommended)
+
     def dji_add_files_dialog(self):
         files = filedialog.askopenfilenames(
             title="Select DJI MP4 and SRT files",
@@ -1689,7 +1830,7 @@ class App(TkinterDnD.Tk):
         for item in self.dji_tree.get_children():
             self.dji_tree.delete(item)
         for idx, path in enumerate(self.dji_files):
-            self.dji_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready" if sidecar(path) else "Missing SRT"))
+            self.dji_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready" if sidecar(path) or self.dji_log_var.get().strip() else "Needs SRT / log"))
         self.dji_files_info.set(f"Files: {len(self.dji_files)}")
 
     def dji_delete_selected(self, event=None):
@@ -1765,12 +1906,30 @@ class App(TkinterDnD.Tk):
             messagebox.showerror("Invalid DJI home", str(e))
             return
 
+        self.selected_dji_log = None
+        self.selected_dji_video_start = None
+        self.selected_dji_stick_mode = int(self.dji_stick_mode_var.get())
+        if mode == "dji":
+            try:
+                log_path = self.dji_log_var.get().strip()
+                if log_path:
+                    self.selected_dji_log = Path(log_path).expanduser().resolve()
+                    flight = FlightLog(self.selected_dji_log)
+                    offset_text = self.dji_video_start_var.get().strip()
+                    if offset_text:
+                        self.selected_dji_video_start = float(offset_text)
+                        flight.offset(elapsed=self.selected_dji_video_start)
+            except (ValueError, OSError) as e:
+                messagebox.showerror("Invalid DJI flight log / video start", str(e))
+                return
+
         selected_components = [
             name
             for name, _ in OVERLAY_COMPONENTS
             if self.overlay_component_vars[name].get()
             and (mode == "dji" or not name.startswith("dji_"))
             and (mode != "dji" or name not in ("gps-lock", "gps_dop"))
+            and (name not in LOG_FIELDS or self.selected_dji_log or name in ("dji_log_alt", "dji_climb"))
         ]
         if not selected_components:
             messagebox.showwarning(
@@ -1843,10 +2002,14 @@ class App(TkinterDnD.Tk):
             if mode == "dji":
                 from dji_telemetry import sidecar
                 missing = [p.name for p in files_snapshot if sidecar(p) is None]
-                if missing:
-                    messagebox.showerror("Missing SRT", "同名のSRTが見つかりません。\n" + "\n".join(missing))
+                if missing and (not self.selected_dji_log or self.selected_dji_video_start is None):
+                    messagebox.showerror("Missing SRT / video start", "同名のSRTがない場合は、復号済みJSONと動画開始時の飛行経過秒数を指定してください。\n" + "\n".join(missing))
                     self._set_start_button_start()
                     return
+            if mode == "dji" and self.selected_dji_log and self.selected_dji_video_start is not None and len(files_snapshot) != 1:
+                messagebox.showerror("Video start", "開始秒数を手入力する場合は動画を1本ずつ処理してください。")
+                self._set_start_button_start()
+                return
             self.worker_thread = threading.Thread(
                 target=self.worker_dji if mode == "dji" else self.worker_overlay,
                 args=(files_snapshot, out_dir, save_with_input),
@@ -2146,6 +2309,20 @@ class App(TkinterDnD.Tk):
         self.log(f"Processing: {mp4}")
         self.log(f"Output folder: {out_dir}")
 
+        if dji_enabled and self.selected_dji_log:
+            from dji_flightlog import load_flight_video
+            from dji_telemetry import load_srt, sidecar
+            duration = concat_duration(self.ffprobe, [mp4])
+            if duration is None:
+                raise ValueError("動画の長さを確認できませんでした。")
+            subtitle = sidecar(mp4)
+            srt = load_srt(subtitle, self.selected_timezone) if subtitle else None
+            checked = load_flight_video(self.selected_dji_log, duration, srt,
+                                        self.selected_dji_video_start, self.selected_dji_home)
+            blank_count = sum(e.dji_battery is None for e in checked.frames.values())
+            if blank_count:
+                self.log("飛行ログがない冒頭・末尾の短い区間は、ログの値を空欄にして出力します。")
+
         overlay_input = mp4
         width = self._video_width(mp4)
         self.log(f"Input width: {width}px")
@@ -2170,6 +2347,9 @@ class App(TkinterDnD.Tk):
             encoder=self.encoder_var.get(),
             dji_home=self.selected_dji_home,
             dji_enabled=dji_enabled,
+            dji_flight_log=self.selected_dji_log if dji_enabled else None,
+            dji_video_start=self.selected_dji_video_start if dji_enabled else None,
+            dji_stick_mode=self.selected_dji_stick_mode,
         )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)

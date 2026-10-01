@@ -45,6 +45,24 @@ class TelemetrySession:
     def load(self, loader, ffmpeg_gopro, inputpath):
         from dji_telemetry import sidecar, load_srt
         paths = self.paths or [inputpath]
+        if self.dji_options.get('enabled') and self.dji_options.get('flight_log'):
+            from dji_flightlog import load_flight_video
+            self.is_dji = True
+            self.segments = []
+            for path in paths:
+                recording = ffmpeg_gopro.find_recording(Path(path))
+                subtitle = sidecar(path)
+                srt = load_srt(subtitle, self.dji_options.get('timezone', 'Asia/Tokyo')) if subtitle else None
+                if srt is not None and abs(srt.max.millis() - recording.video.duration.millis()) > 2000:
+                    raise ValueError(f"SRT/video duration mismatch: {subtitle}")
+                frames = load_flight_video(
+                    self.dji_options['flight_log'], recording.video.duration.millis() / 1000,
+                    srt, self.dji_options.get('video_start'), self.dji_options.get('home'))
+                self.segments.append(SimpleNamespace(framemeta=frames, recording=recording))
+                self.log(f"DJI flight log: {len(frames)} samples; video starts at "
+                         f"{frames.frames[frames.min].dji_flight_time}")
+            return SimpleNamespace(framemeta=self.segments[0].framemeta,
+                                   recording=ffmpeg_gopro.find_recording(inputpath))
         subtitles = [sidecar(path) for path in paths] if self.dji_options.get("enabled") else []
         if self.dji_options.get("enabled") and not all(subtitles):
             raise ValueError("DJI mode requires a matching SRT beside every MP4")

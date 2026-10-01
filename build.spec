@@ -58,6 +58,8 @@ datas = []
 binaries = []
 hiddenimports = []
 hiddenimports += ["dashboard_extensions"]
+hiddenimports += ["dji_telemetry", "dji_flightlog"]
+hiddenimports += ["dji_hud"]
 datas += copy_metadata("gopro-overlay")
 
 # Always include common assets

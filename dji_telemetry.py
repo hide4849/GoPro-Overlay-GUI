@@ -13,6 +13,8 @@ from gopro_overlay.point import Point
 from gopro_overlay.timeunits import timeunits
 from gopro_overlay.timeseries_process import distance_azi_between
 from gopro_overlay.units import units
+from dji_flightlog import LOG_FIELDS
+from dji_hud import DJI_ITEMS
 
 FIELDS = {
     'dji_elapsed': 'REC TIME (s)',
@@ -21,6 +23,7 @@ FIELDS = {
     'dji_start_distance': 'FROM REC START (m)',
     'dji_home_distance': 'FROM HOME (m)',
 }
+FIELDS.update({key: spec[0] for key, spec in LOG_FIELDS.items()})
 
 
 def sidecar(video):
@@ -93,8 +96,10 @@ def load_srt(path, timezone_name='Asia/Tokyo', home=None):
             fields['alt'] = units.Quantity(float(values['abs_alt']), units.m)
         if 'rel_alt' in values:
             fields['dji_relative_alt'] = units.Quantity(float(values['rel_alt']), units.m)
+            fields['dji_log_alt'] = units.Quantity(float(values['rel_alt']), units.number)
         if 'rel_alt' in a[4] and 'rel_alt' in b[4]:
             fields['dji_vertical_speed'] = units.Quantity((float(b[4]['rel_alt']) - float(a[4]['rel_alt'])) / dt, units.mps)
+            fields['dji_climb'] = units.Quantity(fields['dji_vertical_speed'].to('kph').magnitude, units.number)
         if home_point is not None:
             fields['dji_home_distance'] = distance_azi_between(home_point, point)[0]
         # Internal lock flag enables route widgets; never expose as measured GPS lock.
@@ -111,12 +116,56 @@ def load_srt(path, timezone_name='Asia/Tokyo', home=None):
     return result
 
 
-def add_layout(xml_text, home=None):
+def add_layout(xml_text, home=None, selected=None, flight_log=False, scale=1, stick_mode=2):
     root = ET.fromstring(xml_text)
-    for i, (key, label) in enumerate(FIELDS.items()):
-        if key == 'dji_home_distance' and home is None:
+    for speed_unit in root.iter('component'):
+        if speed_unit.get('type') == 'metric_unit' and speed_unit.get('metric') == 'speed':
+            speed_unit.set('type', 'text')
+            for attribute in ('metric', 'units', 'format', 'dp'):
+                speed_unit.attrib.pop(attribute, None)
+            speed_unit.text = 'km/h'
+    visible = []
+    for key, label in FIELDS.items():
+        if key not in DJI_ITEMS:
             continue
-        group = ET.SubElement(root, 'composite', name=key, x='20', y=str(130 + i * 56))
-        ET.SubElement(group, 'component', type='text', x='0', y='0', size='16').text = label
-        ET.SubElement(group, 'component', type='metric', x='0', y='20', size='24', metric=key, dp='1')
+        if selected is not None and key not in selected:
+            continue
+        if key in LOG_FIELDS and not flight_log and key not in ('dji_log_alt', 'dji_climb'):
+            continue
+        if key == 'dji_home_distance' and home is None and not flight_log:
+            continue
+        visible.append((key, label))
+    if flight_log:
+        priority = list(DJI_ITEMS)
+        visible.sort(key=lambda item: priority.index(item[0]) if item[0] in priority else len(priority))
+    tile_index = 0
+    for key, label in visible:
+        px = lambda value: str(round(value * scale))
+        if key == 'dji_mode':
+            speed = next((e for e in root.iter() if e.get('name') == 'big_mph'), None)
+            x = speed.get('x', px(16)) if speed is not None else px(16)
+            y = float(speed.get('y', px(800))) if speed is not None else 800 * scale
+            ET.SubElement(root, 'component', type='dji_mode', name=key, x=x,
+                          y=str(round(y - 70 * scale)), scale=str(scale), size=px(34))
+            continue
+        if key == 'dji_sticks':
+            ET.SubElement(root, 'component', type='dji_sticks', name=key,
+                          x=px((1920-272)/2), y=px(890), scale=str(scale),
+                          stick_mode=str(stick_mode), size=px(16))
+            continue
+        i = tile_index
+        tile_index += 1
+        group = ET.SubElement(root, 'frame', name=key,
+                              x=px(24 + (i % 3) * 242), y=px(130 + (i // 3) * 80),
+                              width=px(232), height=px(70), bg='12,22,34,190', cr=px(10))
+        if key in ('dji_uplink', 'dji_downlink'):
+            ET.SubElement(group, 'component', type='dji_signal', metric=key,
+                          x=px(12), y=px(6), scale=str(scale), size=px(14))
+            continue
+        ET.SubElement(group, 'component', type='text', x=px(12), y=px(8),
+                      size=px(14), rgb='146,173,193').text = label
+        is_text = key in LOG_FIELDS and LOG_FIELDS[key][3] is None
+        ET.SubElement(group, 'component', type='dji_text' if is_text else 'metric', x=px(12), y=px(29),
+                      size=px(16 if is_text else 28), metric=key, dp=str(LOG_FIELDS[key][4] if key in LOG_FIELDS else 1),
+                      rgb='104,226,231')
     return ET.tostring(root, encoding='unicode')

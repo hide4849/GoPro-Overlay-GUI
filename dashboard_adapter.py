@@ -74,7 +74,8 @@ def adapt_source(source):
 def validate_vendor(path, check_installed=False):
     path = Path(path)
     manifest = json.loads(path.with_name('upstream.json').read_text())
-    data = path.read_bytes()
+    # Git's Windows checkout may convert line endings without changing source.
+    data = path.read_bytes().replace(b'\r\n', b'\n')
     if hashlib.sha256(data).hexdigest() != manifest['sha256']:
         raise ValueError('Upstream dashboard checksum mismatch; restore the matching vendor files')
     if check_installed and version('gopro-overlay') != manifest['version']:
