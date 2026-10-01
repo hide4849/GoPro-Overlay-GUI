@@ -72,6 +72,11 @@ OVERLAY_COMPONENTS = (
     ("altitude", "Altitude"),
     ("moving_map", "Moving Map"),
     ("journey_map", "Journey Map"),
+    ("dji_elapsed", "DJI Recording Time"),
+    ("dji_relative_alt", "DJI Relative Altitude"),
+    ("dji_vertical_speed", "DJI Vertical Speed"),
+    ("dji_start_distance", "DJI Distance from Rec Start"),
+    ("dji_home_distance", "DJI Distance from Home"),
 )
 
 # --- GPS sanity caps ---
@@ -654,6 +659,8 @@ def run_dashboard_overlay(
     telemetry_segments: list[Path] | None = None,
     fallback_gpx: Path | None = None,
     encoder: str = "cpu",
+    dji_home=None,
+    dji_enabled=False,
 ):
     try:
         selected_tz = ZoneInfo(timezone_name)
@@ -672,6 +679,16 @@ def run_dashboard_overlay(
     # PyInstaller's Python DLLs can make them fail during initialization.
     ffmpeg_dir = str(ASSET_FFMPEG.parent)
 
+    from dji_telemetry import sidecar, FIELDS, add_layout
+    is_dji = dji_enabled
+    if is_dji and not all(sidecar(path) for path in (telemetry_segments or [input_mp4])):
+        raise ValueError("DJI mode requires a matching SRT beside every MP4")
+    overlay_components = [name for name in overlay_components
+                          if (is_dji or name not in FIELDS)
+                          and (not is_dji or name not in ('gps-lock', 'gps_dop'))
+                          and (name != 'dji_home_distance' or dji_home is not None)]
+    if not overlay_components:
+        raise ValueError("No selected overlay items are available for this input")
     argv = [
         str(DASHBOARD_PY),
         "--show-ffmpeg",
@@ -692,6 +709,7 @@ def run_dashboard_overlay(
     from gopro_overlay import layout_xml
     from gopro_overlay.ffmpeg import FFMPEG
     original_date_formatter = layout_xml.date_formatter_from_element
+    original_metric_accessor = layout_xml.metric_accessor_from
     original_load_xml_layout = layout_xml.load_xml_layout
     original_ffmpeg_path = FFMPEG._path
 
@@ -705,9 +723,11 @@ def run_dashboard_overlay(
     def load_xml_layout_with_gps_dop(filepath):
         xml_text = original_load_xml_layout(filepath)
         if filepath.name.startswith("default-"):
-            return add_gps_dop_to_layout(xml_text)
+            xml_text = add_gps_dop_to_layout(xml_text)
+            return add_layout(xml_text, dji_home) if is_dji else xml_text
         return xml_text
 
+    layout_xml.metric_accessor_from = lambda name: ((lambda e: getattr(e, name)) if name in FIELDS else original_metric_accessor(name))
     layout_xml.date_formatter_from_element = date_formatter_with_selected_timezone
     layout_xml.load_xml_layout = load_xml_layout_with_gps_dop
 
@@ -728,7 +748,8 @@ def run_dashboard_overlay(
     try:
         from dashboard_adapter import hardware_output_options
         output_options = hardware_output_options(encoder)
-        init_globals = {"GOPRO_OVERLAY_OUTPUT_OPTIONS": output_options}
+        init_globals = {"GOPRO_OVERLAY_OUTPUT_OPTIONS": output_options,
+                        "GOPRO_OVERLAY_DJI_OPTIONS": {"timezone": timezone_name, "home": dji_home, "enabled": dji_enabled}}
         log(f"Overlay encoder: {encoder}; " + ("target 7.5Mbps" if output_options else "CPU defaults"))
         if fallback_gpx:
             init_globals["GOPRO_OVERLAY_FALLBACK_GPX"] = str(fallback_gpx)
@@ -755,6 +776,7 @@ def run_dashboard_overlay(
     finally:
         layout_xml.date_formatter_from_element = original_date_formatter
         layout_xml.load_xml_layout = original_load_xml_layout
+        layout_xml.metric_accessor_from = original_metric_accessor
         FFMPEG._path = original_ffmpeg_path
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
 
@@ -801,11 +823,13 @@ class App(TkinterDnD.Tk):
             name: tk.BooleanVar(value=True) for name, _ in OVERLAY_COMPONENTS
         }
         self.selected_overlay_components = [name for name, _ in OVERLAY_COMPONENTS]
+        self.dji_home_var = tk.StringVar(value="")
+        self.selected_dji_home = None
         self.fallback_gpx_var = tk.StringVar(value="")
         self.selected_fallback_gpx: Path | None = None
 
         # Mode switch (radio)  ← ここが「押したらGUIも切り替え」
-        self.mode_var = tk.StringVar(value="concat")  # concat / batch / overlay
+        self.mode_var = tk.StringVar(value="concat")  # concat / batch / overlay / dji
 
         # Concat mode states
         self.concat_files: list[Path] = []
@@ -823,6 +847,8 @@ class App(TkinterDnD.Tk):
         self.pair_map: dict[str, tuple[Path, Path]] = {}
 
         # Overlay-only mode: process each MP4 independently in its source folder.
+        self.dji_files: list[Path] = []
+        self.dji_files_info = tk.StringVar(value="Files: 0")
         self.overlay_files: list[Path] = []
         self.overlay_files_info = tk.StringVar(value="Files: 0")
 
@@ -870,13 +896,13 @@ class App(TkinterDnD.Tk):
         self.out_dir_entry = ttk.Entry(output_row, textvariable=self.out_dir, width=76)
         self.out_dir_entry.grid(row=0, column=1, padx=6)
         self.out_dir_button = ttk.Button(output_row, text="Browse", command=self.browse_out)
-        self.out_dir_button.grid(row=0, column=2)
+        self.out_dir_button.grid(row=1, column=1, sticky="w", padx=6, pady=(5, 0))
         ttk.Checkbutton(
             output_row,
             text="Save in input file folder",
             variable=self.save_with_input_var,
             command=self._update_output_folder_controls,
-        ).grid(row=1, column=1, sticky="w", padx=6, pady=(5, 0))
+        ).grid(row=2, column=1, sticky="w", padx=6, pady=(5, 0))
         ttk.Button(top, text="About", command=self.show_about).pack(side="right", anchor="n")
 
         self._update_output_folder_controls()
@@ -900,26 +926,17 @@ class App(TkinterDnD.Tk):
         mode_box = ttk.LabelFrame(left, text="Mode")
         mode_box.pack(anchor="w", pady=(0, 8))
 
-        ttk.Radiobutton(
-            mode_box,
-            text="Merge + Overlay",
-            variable=self.mode_var,
-            value="concat",
-        ).pack(side="left", padx=10, pady=4)
-
-        ttk.Radiobutton(
-            mode_box,
-            text="Batch Overlay (.mp4 + .360)",
-            variable=self.mode_var,
-            value="batch",
-        ).pack(side="left", padx=10, pady=4)
-
-        ttk.Radiobutton(
-            mode_box,
-            text="Overlay (MP4 Batch)",
-            variable=self.mode_var,
-            value="overlay",
-        ).pack(side="left", padx=10, pady=4)
+        self.mode_buttons = []
+        for index, (value, label) in enumerate((
+            ("concat", "DRC(Merge + Overlay)"),
+            ("batch", "360 Overlay (.mp4 + .360)"),
+            ("overlay", "Overlay (MP4)"),
+            ("dji", "DJI (MP4 + SRT)"),
+        )):
+            button = ttk.Radiobutton(mode_box, text=label, variable=self.mode_var, value=value)
+            self.mode_buttons.append(button)
+            button.grid(row=index // 2, column=index % 2,
+                                              sticky="w", padx=10, pady=4)
 
         opts_row = ttk.Frame(left)
         opts_row.pack(anchor="w", pady=(0, 8))
@@ -1004,12 +1021,15 @@ class App(TkinterDnD.Tk):
 
         overlay_box = ttk.LabelFrame(left, text="Overlay Items")
         overlay_box.pack(anchor="w", fill="x", pady=(0, 8))
+        self.overlay_checkbuttons = {}
         for index, (name, label) in enumerate(OVERLAY_COMPONENTS):
-            ttk.Checkbutton(
+            checkbox = ttk.Checkbutton(
                 overlay_box,
                 text=label,
                 variable=self.overlay_component_vars[name],
-            ).grid(
+            )
+            self.overlay_checkbuttons[name] = checkbox
+            checkbox.grid(
                 row=index // 4,
                 column=index % 4,
                 padx=(8, 4),
@@ -1017,7 +1037,13 @@ class App(TkinterDnD.Tk):
                 sticky="w",
             )
 
+        dji_box = ttk.LabelFrame(left, text="DJI SRT (same filename as MP4; detected automatically)")
+        self.dji_box = dji_box
+        dji_box.pack(anchor="w", fill="x", pady=(0, 8))
+        ttk.Label(dji_box, text="Home lat,lon (optional):").pack(side="left", padx=8)
+        ttk.Entry(dji_box, textvariable=self.dji_home_var, width=30).pack(side="left", padx=8)
         fallback_box = ttk.LabelFrame(left, text="GPS Logger Fallback")
+        self.fallback_box = fallback_box
         fallback_box.pack(anchor="w", fill="x", pady=(0, 8))
         ttk.Label(fallback_box, text="GPX file:").grid(
             row=0, column=0, padx=(10, 4), pady=5, sticky="w"
@@ -1025,16 +1051,18 @@ class App(TkinterDnD.Tk):
         ttk.Entry(
             fallback_box, textvariable=self.fallback_gpx_var, width=54
         ).grid(row=0, column=1, padx=(0, 4), pady=5, sticky="ew")
+        fallback_buttons = ttk.Frame(fallback_box)
+        fallback_buttons.grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
         ttk.Button(
-            fallback_box, text="Browse", command=self.browse_fallback_gpx
-        ).grid(row=0, column=2, padx=(0, 4), pady=5)
+            fallback_buttons, text="Browse", command=self.browse_fallback_gpx
+        ).pack(side="left", padx=(0, 4))
         ttk.Button(
-            fallback_box, text="Clear", command=lambda: self.fallback_gpx_var.set("")
-        ).grid(row=0, column=3, padx=(0, 10), pady=5)
+            fallback_buttons, text="Clear", command=lambda: self.fallback_gpx_var.set("")
+        ).pack(side="left")
         ttk.Label(
             fallback_box,
             text="Used only when GoPro GPS is invalid (maximum interpolation gap: 60 s)",
-        ).grid(row=1, column=1, columnspan=3, padx=(0, 10), pady=(0, 5), sticky="w")
+        ).grid(row=2, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
         fallback_box.columnconfigure(1, weight=1)
 
         # ---- STACK AREA (mode-specific UI) ----
@@ -1044,7 +1072,8 @@ class App(TkinterDnD.Tk):
         self.concat_frame = ttk.Frame(self.stack)
         self.batch_frame = ttk.Frame(self.stack)
         self.overlay_frame = ttk.Frame(self.stack)
-        for f in (self.concat_frame, self.batch_frame, self.overlay_frame):
+        self.dji_frame = ttk.Frame(self.stack)
+        for f in (self.concat_frame, self.batch_frame, self.overlay_frame, self.dji_frame):
             f.grid(row=0, column=0, sticky="nsew")
         self.stack.rowconfigure(0, weight=1)
         self.stack.columnconfigure(0, weight=1)
@@ -1052,6 +1081,7 @@ class App(TkinterDnD.Tk):
         self._build_concat_ui(self.concat_frame)
         self._build_batch_ui(self.batch_frame)
         self._build_overlay_ui(self.overlay_frame)
+        self._build_dji_ui(self.dji_frame)
 
         # ---- RIGHT: Log ----
         ttk.Label(right, text="Log").pack(anchor="w")
@@ -1128,15 +1158,48 @@ class App(TkinterDnD.Tk):
         self.overlay_tree.dnd_bind("<<Drop>>", self.overlay_on_drop)
         self.overlay_tree.bind("<Delete>", self.overlay_delete_selected)
 
+    def _build_dji_ui(self, parent: ttk.Frame):
+        ttk.Label(parent, text="MP4と同名のSRTを同じフォルダに置いて追加してください。").pack(anchor="w")
+        btns = ttk.Frame(parent)
+        btns.pack(fill="x", pady=(0, 6))
+
+        ttk.Button(btns, text="Add MP4 + SRT", command=self.dji_add_files_dialog).pack(side="left")
+        self.dji_start_btn = ttk.Button(btns, text="Start", command=self.start)
+        self.dji_start_btn.pack(side="left", padx=6)
+        ttk.Button(btns, text="Clear", command=self.dji_clear_files).pack(side="left")
+
+        ttk.Label(parent, textvariable=self.dji_files_info).pack(anchor="w")
+
+        self.dji_tree = ttk.Treeview(parent, columns=("file", "status"), show="headings", height=16)
+        self.dji_tree.heading("file", text="DJI MP4 + matching SRT")
+        self.dji_tree.heading("status", text="Status")
+        self.dji_tree.column("file", width=100)
+        self.dji_tree.column("status", width=50, anchor="center")
+        self.dji_tree.pack(fill="both", expand=True, pady=6)
+        self.dji_tree.drop_target_register(DND_FILES)
+        self.dji_tree.dnd_bind("<<Drop>>", self.dji_on_drop)
+        self.dji_tree.bind("<Delete>", self.dji_delete_selected)
+
     # ---------- Mode switch ----------
     def _switch_mode(self):
         mode = self.mode_var.get()
+        self.dji_box.pack_forget()
+        self.fallback_box.pack_forget()
+        box = self.dji_box if mode == "dji" else self.fallback_box
+        box.pack(before=self.stack, anchor="w", fill="x", pady=(0, 8))
+        for name, checkbox in self.overlay_checkbuttons.items():
+            available = (name.startswith("dji_") and mode == "dji") or (
+                not name.startswith("dji_") and not (mode == "dji" and name in ("gps-lock", "gps_dop")))
+            checkbox.grid() if available else checkbox.grid_remove()
         if mode == "concat":
             self.concat_frame.tkraise()
             self.concat_start_btn.config(text="Start", command=self.start)
         elif mode == "batch":
             self.batch_frame.tkraise()
             self.batch_start_btn.config(text="Start", command=self.start)
+        elif mode == "dji":
+            self.dji_frame.tkraise()
+            self.dji_start_btn.config(text="Start", command=self.start)
         else:
             self.overlay_frame.tkraise()
             self.overlay_start_btn.config(text="Start", command=self.start)
@@ -1378,18 +1441,25 @@ class App(TkinterDnD.Tk):
 
 
     def _set_start_button_stop(self):
+        for button in self.mode_buttons:
+            button.state(["disabled"])
         mode = self.mode_var.get()
         if mode == "concat":
             self.concat_start_btn.config(text="Stop", command=self.stop)
         elif mode == "batch":
             self.batch_start_btn.config(text="Stop", command=self.stop)
+        elif mode == "dji":
+            self.dji_start_btn.config(text="Stop", command=self.stop)
         else:
             self.overlay_start_btn.config(text="Stop", command=self.stop)
 
     def _set_start_button_start(self):
+        for button in self.mode_buttons:
+            button.state(["!disabled"])
         self.concat_start_btn.config(text="Start", command=self.start)
         self.batch_start_btn.config(text="Start", command=self.start)
         self.overlay_start_btn.config(text="Start", command=self.start)
+        self.dji_start_btn.config(text="Start", command=self.start)
 
     # ============================================================
     # Concat mode UI actions
@@ -1591,6 +1661,61 @@ class App(TkinterDnD.Tk):
                 self.overlay_tree.set(iid, "status", status)
         self.after(0, _update)
 
+    def dji_add_files_dialog(self):
+        files = filedialog.askopenfilenames(
+            title="Select DJI MP4 and SRT files",
+            filetypes=[("DJI files", "*.mp4 *.MP4 *.srt *.SRT"), ("All files", "*.*")]
+        )
+        self.dji_files.extend(self._dji_video_paths([Path(f) for f in files]))
+        self.dji_files = uniq_preserve([
+            p for p in self.dji_files
+            if p.exists() and p.is_file() and p.suffix.lower() == ".mp4"
+        ])
+        self.refresh_dji_list()
+
+    def dji_on_drop(self, event):
+        dropped = self._dji_video_paths(parse_drop_files(event.data))
+        self.dji_files = uniq_preserve(self.dji_files + dropped)
+        self.refresh_dji_list()
+
+    def dji_clear_files(self):
+        self.dji_files = []
+        self.refresh_dji_list()
+
+    def refresh_dji_list(self):
+        from dji_telemetry import sidecar
+        if not hasattr(self, "dji_tree"):
+            return
+        for item in self.dji_tree.get_children():
+            self.dji_tree.delete(item)
+        for idx, path in enumerate(self.dji_files):
+            self.dji_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready" if sidecar(path) else "Missing SRT"))
+        self.dji_files_info.set(f"Files: {len(self.dji_files)}")
+
+    def dji_delete_selected(self, event=None):
+        for idx in sorted((int(i) for i in self.dji_tree.selection()), reverse=True):
+            if 0 <= idx < len(self.dji_files):
+                self.dji_files.pop(idx)
+        self.refresh_dji_list()
+
+    def dji_set_row_status(self, row_i: int, status: str):
+        def _update():
+            iid = str(row_i)
+            if self.dji_tree.exists(iid):
+                self.dji_tree.set(iid, "status", status)
+        self.after(0, _update)
+
+    @staticmethod
+    def _dji_video_paths(paths):
+        result = []
+        for path in paths:
+            if path.suffix.lower() == ".srt":
+                path = next((path.with_suffix(ext) for ext in (".MP4", ".mp4")
+                             if path.with_suffix(ext).is_file()), path)
+            if path.is_file() and path.suffix.lower() == ".mp4":
+                result.append(path)
+        return result
+
     def _video_width(self, mp4: Path) -> int:
         """Return the first video stream width, or fail with a useful error."""
         p = subprocess.run(
@@ -1614,6 +1739,8 @@ class App(TkinterDnD.Tk):
     # Start/Stop
     # ============================================================
     def start(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
         mode = self.mode_var.get()
         out_dir = Path(self.out_dir.get()).resolve()
         save_with_input = self.save_with_input_var.get()
@@ -1631,11 +1758,19 @@ class App(TkinterDnD.Tk):
             )
             return
         self.selected_timezone = timezone_name
+        from dji_telemetry import parse_home
+        try:
+            self.selected_dji_home = parse_home(self.dji_home_var.get()) if mode == "dji" else None
+        except ValueError as e:
+            messagebox.showerror("Invalid DJI home", str(e))
+            return
 
         selected_components = [
             name
             for name, _ in OVERLAY_COMPONENTS
             if self.overlay_component_vars[name].get()
+            and (mode == "dji" or not name.startswith("dji_"))
+            and (mode != "dji" or name not in ("gps-lock", "gps_dop"))
         ]
         if not selected_components:
             messagebox.showwarning(
@@ -1647,7 +1782,7 @@ class App(TkinterDnD.Tk):
 
         fallback_text = self.fallback_gpx_var.get().strip()
         self.selected_fallback_gpx = None
-        if fallback_text:
+        if fallback_text and mode != "dji":
             fallback_gpx = Path(fallback_text).expanduser().resolve()
             if not fallback_gpx.is_file() or fallback_gpx.suffix.lower() != ".gpx":
                 messagebox.showerror(
@@ -1700,13 +1835,20 @@ class App(TkinterDnD.Tk):
                 daemon=True
             )
         else:
-            files_snapshot = list(self.overlay_files)
+            files_snapshot = list(self.dji_files if mode == "dji" else self.overlay_files)
             if not files_snapshot:
                 messagebox.showwarning("No files", "オーバーレイするMP4を追加してください。")
                 self._set_start_button_start()
                 return
+            if mode == "dji":
+                from dji_telemetry import sidecar
+                missing = [p.name for p in files_snapshot if sidecar(p) is None]
+                if missing:
+                    messagebox.showerror("Missing SRT", "同名のSRTが見つかりません。\n" + "\n".join(missing))
+                    self._set_start_button_start()
+                    return
             self.worker_thread = threading.Thread(
-                target=self.worker_overlay,
+                target=self.worker_dji if mode == "dji" else self.worker_overlay,
                 args=(files_snapshot, out_dir, save_with_input),
                 daemon=True,
             )
@@ -1894,6 +2036,7 @@ class App(TkinterDnD.Tk):
             telemetry_segments=files,
             fallback_gpx=self.selected_fallback_gpx,
             encoder=self.encoder_var.get(),
+            dji_home=self.selected_dji_home,
         )
         self.log(f"■ Overlay Finish: {out_mp4.name}")
 
@@ -1925,6 +2068,27 @@ class App(TkinterDnD.Tk):
                     self.overlay_set_row_status(row_i, "Finish")
                 except Exception:
                     self.overlay_set_row_status(row_i, "Fail")
+                    raise
+            self.log("\nALL DONE")
+        except Exception as e:
+            self.log(f"\nFATAL ERROR: {e}")
+        finally:
+            self._set_start_button_start()
+            self.current_proc = None
+            self.stop_event.clear()
+
+    def worker_dji(self, files: list[Path], out_dir: Path, save_with_input: bool):
+        try:
+            for row_i, mp4 in enumerate(files):
+                if self.stop_event.is_set():
+                    raise RuntimeError("Stopped by user")
+                self.dji_set_row_status(row_i, "Processing")
+                try:
+                    file_out_dir = mp4.parent if save_with_input else out_dir
+                    self.process_overlay_file(mp4, file_out_dir, dji_enabled=True)
+                    self.dji_set_row_status(row_i, "Finish")
+                except Exception:
+                    self.dji_set_row_status(row_i, "Fail")
                     raise
             self.log("\nALL DONE")
         except Exception as e:
@@ -1972,7 +2136,7 @@ class App(TkinterDnD.Tk):
             cmd = base + ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF, str(proxy_mp4)]
             run_cmd(cmd, self.log, stop_event=self.stop_event, on_proc=self._set_current_proc)
 
-    def process_overlay_file(self, mp4: Path, out_dir: Path):
+    def process_overlay_file(self, mp4: Path, out_dir: Path, dji_enabled=False):
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = mp4.stem
         proxy_mp4 = out_dir / f"{stem}_1080p.mp4"
@@ -2001,8 +2165,11 @@ class App(TkinterDnD.Tk):
             self.log,
             self.selected_timezone,
             self.selected_overlay_components,
+            telemetry_segments=[mp4],
             fallback_gpx=self.selected_fallback_gpx,
             encoder=self.encoder_var.get(),
+            dji_home=self.selected_dji_home,
+            dji_enabled=dji_enabled,
         )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)
@@ -2195,6 +2362,7 @@ class App(TkinterDnD.Tk):
             self.selected_overlay_components,
             fallback_gpx=self.selected_fallback_gpx,
             encoder=self.encoder_var.get(),
+            dji_home=self.selected_dji_home,
         )
 
         self.log(f"■ Overlay Finish: {out_mp4.name}")

@@ -182,3 +182,8 @@ Bundled components:
 
 - This project: **GPL-3.0** (`LICENSE`)
 - Third-party components: see `THIRD_PARTY_NOTICES.md` and the license files under `third_party/`.
+
+## DJI SRT telemetry
+Place the matching `.SRT` or `.srt` beside each MP4 with the same basename and use DJI (MP4 + SRT). Use untrimmed, original-speed video. The selected overlay timezone is also the timezone of the SRT timestamps.
+
+DJI adds recording elapsed seconds, relative altitude, estimated vertical speed, and horizontal distance from the recording start. Optional home latitude,longitude enables horizontal distance from home. Speed uses an approximately two-second GPS baseline. DJI mode processes clips separately and resets elapsed time/start position per clip. DRC(Merge + Overlay), 360 Overlay (.mp4 + .360), and Overlay (MP4) use GoPro telemetry and ignore SRT sidecars. DJI GPX fallback is unsupported. GPS lock/DOP are hidden because they are not recorded. Battery, remaining flight time, radio strength, and time since takeoff require separate flight-log integration and are not yet supported.

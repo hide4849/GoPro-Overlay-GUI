@@ -36,7 +36,7 @@ def adapt_source(source):
         '    from dashboard_extensions import TelemetrySession, process_segment_deltas\n'
         '    gui_telemetry = TelemetrySession(\n'
         '        globals().get("GOPRO_OVERLAY_TELEMETRY_SEGMENTS"),\n'
-        '        globals().get("GOPRO_OVERLAY_FALLBACK_GPX"), log)\n'
+        '        globals().get("GOPRO_OVERLAY_FALLBACK_GPX"), log, globals().get("GOPRO_OVERLAY_DJI_OPTIONS"))\n'
         '    args = gopro_dashboard_arguments()')
     source = _replace_once(
         source, '                    gopro = loader.load(inputpath)',
@@ -55,7 +55,8 @@ def adapt_source(source):
     # recording so smoothing and speed calculations never cross boundaries.
     wrapped = ('                for frame_meta in gui_telemetry.frames(frame_meta):\n'
                '                    packets_per_second = frame_meta.packets_per_second()\n'
-               + '\n'.join('    ' + line for line in block.splitlines()) + '\n'
+               + '                    if not gui_telemetry.is_dji:\n'
+               + '\n'.join('        ' + line for line in block.splitlines()) + '\n'
                '                frame_meta = gui_telemetry.combine(frame_meta)\n'
                '                packets_per_second = frame_meta.packets_per_second()')
     source = source[:first] + wrapped + source[last:]

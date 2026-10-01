@@ -34,13 +34,37 @@ def process_segment_deltas(frame_meta, processor, skip=1, filter_fn=lambda e: Tr
 class TelemetrySession:
     """Per-run state; no global library patches or retained recordings."""
 
-    def __init__(self, segments=None, fallback_gpx=None, log=lambda message: None):
+    def __init__(self, segments=None, fallback_gpx=None, log=lambda message: None, dji_options=None):
+        self.dji_options = dji_options or {}
+        self.is_dji = False
         self.paths = segments
         self.fallback_gpx = fallback_gpx
         self.log = log
         self.segments = None
 
     def load(self, loader, ffmpeg_gopro, inputpath):
+        from dji_telemetry import sidecar, load_srt
+        paths = self.paths or [inputpath]
+        subtitles = [sidecar(path) for path in paths] if self.dji_options.get("enabled") else []
+        if self.dji_options.get("enabled") and not all(subtitles):
+            raise ValueError("DJI mode requires a matching SRT beside every MP4")
+        if any(subtitles):
+            if not all(subtitles):
+                raise ValueError("Cannot mix DJI SRT and GoPro telemetry in one merge")
+            if self.fallback_gpx:
+                raise ValueError("GPX fallback is only supported for GoPro inputs")
+            self.is_dji = True
+            self.segments = []
+            for path, subtitle in zip(paths, subtitles):
+                frames = load_srt(subtitle, self.dji_options.get('timezone', 'Asia/Tokyo'),
+                                  self.dji_options.get('home'))
+                recording = ffmpeg_gopro.find_recording(Path(path))
+                if abs(frames.max.millis() - recording.video.duration.millis()) > 2000:
+                    raise ValueError(f"SRT/video duration mismatch: {subtitle}")
+                self.segments.append(SimpleNamespace(framemeta=frames, recording=recording))
+                self.log(f"DJI SRT: {subtitle} ({len(frames)} samples)")
+            return SimpleNamespace(framemeta=self.segments[0].framemeta,
+                                   recording=ffmpeg_gopro.find_recording(inputpath))
         if self.paths:
             self.log(f"Loading {len(self.paths)} telemetry segments independently")
             self.segments = [loader.load(Path(path)) for path in self.paths]
