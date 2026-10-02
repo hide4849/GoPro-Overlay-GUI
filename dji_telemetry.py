@@ -139,8 +139,89 @@ def add_layout(xml_text, home=None, selected=None, flight_log=False, scale=1, st
         priority = list(DJI_ITEMS)
         visible.sort(key=lambda item: priority.index(item[0]) if item[0] in priority else len(priority))
     tile_index = 0
+    altitude = next((e for e in root.iter() if e.get('name') == 'altitude'), None)
+    altitude_y = float(altitude.get('y', 980 * scale)) if altitude is not None else 980 * scale
+    battery_index = 0
+    battery_fields = {
+        'dji_battery': ('%', 0, 24),
+        'dji_voltage': ('V', 2, 24),
+        'dji_current': ('A', 2, 24),
+        'dji_temperature': ('℃', 1, 32),
+    }
+    battery_keys = [key for key in battery_fields if any(item[0] == key for item in visible)]
+    visible.sort(key=lambda item: battery_keys.index(item[0]) if item[0] in battery_keys else len(battery_keys))
     for key, label in visible:
         px = lambda value: str(round(value * scale))
+        if key == 'dji_flight_time':
+            clock = next((e for e in root.iter() if e.get('name') == 'date_and_time'), None)
+            x = float(clock.get('x', 260 * scale)) + 40 * scale if clock is not None else 300 * scale
+            y = float(clock.get('y', 30 * scale)) if clock is not None else 30 * scale
+            group = ET.SubElement(root, 'composite', name=key, x=str(round(x)), y=str(round(y)))
+            ET.SubElement(group, 'component', type='text', x='0', y='0', size=px(16)).text = 'FLIGHT TIME(s)'
+            ET.SubElement(group, 'component', type='metric', metric=key, x='0', y=px(24), size=px(32), dp='1')
+            continue
+        if key == 'dji_log_alt':
+            altitude = next((e for e in root.iter() if e.get('name') == 'altitude'), None)
+            if altitude is not None:
+                group = ET.fromstring(ET.tostring(altitude, encoding='unicode'))
+                group.set('name', key)
+                group.set('x', str(round(float(altitude.get('x', 0)) + 100 * scale)))
+                for component in list(group):
+                    if component.get('type') == 'icon':
+                        group.remove(component)
+                for component in group.iter('component'):
+                    if component.get('type') == 'metric_unit':
+                        component.set('type', 'text')
+                        for attribute in ('metric', 'units', 'format', 'dp'):
+                            component.attrib.pop(attribute, None)
+                        component.text = 'REL ALT(m)'
+                    elif component.get('type') == 'metric':
+                        component.set('metric', key)
+                        component.attrib.pop('units', None)
+                root.append(group)
+            else:
+                group = ET.SubElement(root, 'composite', name=key, x=px(116), y=str(round(altitude_y)))
+                ET.SubElement(group, 'component', type='text', x=px(70), y='0', size=px(16)).text = 'REL ALT(m)'
+                ET.SubElement(group, 'component', type='metric', metric=key, x=px(70), y=px(18), size=px(32), dp='0')
+            continue
+        if key in ('dji_climb', 'dji_home_distance', 'dji_distance'):
+            x, title, dp = {
+                'dji_climb': (400, 'CLIMB (km/h)', 1),
+                'dji_home_distance': (616, 'HOME(m)', 0),
+                'dji_distance': (716, 'TOTAL(m)', 0),
+            }[key]
+            group = ET.SubElement(root, 'composite', name=key, x=px(x), y=str(round(altitude_y)))
+            ET.SubElement(group, 'component', type='text', x='0', y='0', size=px(16)).text = title
+            ET.SubElement(group, 'component', type='metric', metric=key, x='0', y=px(18), size=px(32), dp=str(dp))
+            continue
+        if key in battery_fields:
+            unit, dp, unit_width = battery_fields[key]
+            group = ET.SubElement(root, 'composite', name=key,
+                                  x=px(1900), y=str(round(altitude_y + (22 - (len(battery_keys) - 1 - battery_index) * 38) * scale)))
+            if battery_index == 0:
+                ET.SubElement(group, 'component', type='text', x='0', y=px(-40),
+                              size=px(28), align='right').text = 'Battery'
+            ET.SubElement(group, 'component', type='metric', metric=key,
+                          x=px(-unit_width), y='0', size=px(28), dp=str(dp), align='right')
+            ET.SubElement(group, 'component', type='text', x='0', y='0',
+                          size=px(28), align='right').text = unit
+            battery_index += 1
+            continue
+        if key == 'dji_satellites':
+            gps = next((e for e in root.iter() if e.get('name') == 'gps_info'), None)
+            group = ET.SubElement(root, 'composite', name=key,
+                                  x=gps.get('x', px(1644)) if gps is not None else px(1644),
+                                  y=str(round(float(gps.get('y', 0) if gps is not None else 0) + 82 * scale)))
+            ET.SubElement(group, 'component', type='text', x='0', y='0', size=px(16)).text = 'Satellites:'
+            ET.SubElement(group, 'component', type='metric', metric=key,
+                          x=px(100), y='0', size=px(16), dp='0')
+            continue
+        if key in ('dji_uplink', 'dji_downlink'):
+            ET.SubElement(root, 'component', name=key, type='dji_signal', metric=key,
+                          label='RC' if key == 'dji_uplink' else 'VTX',
+                          x=px(1720), y=str(round(altitude_y + (-83.5 if key == 'dji_uplink' else -7.5) * scale)),
+                          scale=str(scale * 0.75), size=px(18))
+            continue
         if key == 'dji_mode':
             speed = next((e for e in root.iter() if e.get('name') == 'big_mph'), None)
             x = speed.get('x', px(16)) if speed is not None else px(16)
@@ -158,10 +239,6 @@ def add_layout(xml_text, home=None, selected=None, flight_log=False, scale=1, st
         group = ET.SubElement(root, 'frame', name=key,
                               x=px(24 + (i % 3) * 242), y=px(130 + (i // 3) * 80),
                               width=px(232), height=px(70), bg='12,22,34,190', cr=px(10))
-        if key in ('dji_uplink', 'dji_downlink'):
-            ET.SubElement(group, 'component', type='dji_signal', metric=key,
-                          x=px(12), y=px(6), scale=str(scale), size=px(14))
-            continue
         ET.SubElement(group, 'component', type='text', x=px(12), y=px(8),
                       size=px(14), rgb='146,173,193').text = label
         is_text = key in LOG_FIELDS and LOG_FIELDS[key][3] is None

@@ -60,6 +60,12 @@ hiddenimports = []
 hiddenimports += ["dashboard_extensions"]
 hiddenimports += ["dji_telemetry", "dji_flightlog"]
 hiddenimports += ["dji_hud"]
+hiddenimports += ["dji_log_input"]
+for pkg in ("pydjirecord", "Crypto", "httpx"):
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
 datas += copy_metadata("gopro-overlay")
 
 # Always include common assets

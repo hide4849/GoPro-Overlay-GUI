@@ -48,6 +48,24 @@ class FlightLogTests(unittest.TestCase):
             with self.subTest(elapsed=elapsed), self.assertRaises(ValueError):
                 load_flight_video(self.path, 2, elapsed=elapsed)
 
+    def test_dashboard_altitude_uses_srt_absolute_height(self):
+        from gopro_overlay.entry import Entry
+        from gopro_overlay.framemeta import FrameMeta
+        from gopro_overlay.units import units
+        from datetime import timedelta
+        start = datetime(2026, 9, 27, 7, 29, 53, tzinfo=timezone.utc)
+        srt = FrameMeta(packets_per_second=1)
+        for t in range(3):
+            srt.add(timeunits(seconds=t), Entry(start + timedelta(seconds=t),
+                                               alt=units.Quantity(100 + t, units.m)))
+        frames = load_flight_video(self.path, 2, srt_frames=srt)
+        self.assertEqual(frames.get(timeunits(seconds=0)).alt.magnitude, 100)
+        self.assertEqual(frames.get(timeunits(seconds=0)).dji_relative_alt.magnitude, 13)
+        self.assertEqual(frames.get(timeunits(seconds=1)).alt.magnitude, 101)
+        # Absolute altitude remains available after the short flight-log tail.
+        self.assertEqual(frames.get(timeunits(seconds=2)).alt.magnitude, 102)
+        self.assertIsNone(frames.get(timeunits(seconds=2)).dji_relative_alt)
+
     def test_gaps_and_duplicate_timestamps_rejected(self):
         self.rows[2]['osd']['flyTime'] = 1
         self.write()

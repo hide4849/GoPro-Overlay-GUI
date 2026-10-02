@@ -52,6 +52,7 @@ class DJIWidget:
         self.scale = float(element.get('scale', 1))
         self.kind = element.get('type')
         self.key = element.get('metric')
+        self.label = element.get('label')
         self.mode = int(element.get('stick_mode', 2))
 
     def draw(self, image, draw):
@@ -62,10 +63,11 @@ class DJIWidget:
         if self.kind == 'dji_signal':
             q = getattr(e, self.key)
             count = signal_level(q.magnitude if q is not None else None)
-            draw.text((x, y), 'UPLINK' if self.key == 'dji_uplink' else 'DOWNLINK', font=self.font, fill=(180, 203, 218))
+            draw.text((x, y), self.label or ('UPLINK' if self.key == 'dji_uplink' else 'DOWNLINK'), font=self.font, fill=(180, 203, 218))
+            bottom = max(56, self.font.size / s + 50)
             for i in range(5):
                 height = 10 + i * 7
-                draw.rounded_rectangle(box(i*18, 56-height, i*18+12, 56), radius=max(1,round(2*s)),
+                draw.rounded_rectangle(box(i*18, bottom-height, i*18+12, bottom), radius=max(1,round(2*s)),
                                        fill=(104,226,231) if count is not None and i < count else (57,73,86))
             if count is None:
                 draw.text((round(x+98*s),round(y+28*s)), '--',font=self.font,fill=(180,203,218))

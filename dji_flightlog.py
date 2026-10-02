@@ -159,6 +159,12 @@ def load_flight_video(path, duration, srt_frames=None, elapsed=None, home=None):
         row = flight.row_at(offset + t)
         osd = row['osd']
         fields = {}
+        # The original dashboard altitude uses absolute SRT altitude, whereas
+        # flight-log height is relative to takeoff and belongs to the DJI HUD.
+        if srt_frames is not None:
+            altitude = srt_frames.get(timeunits(seconds=t)).alt
+            if altitude is not None:
+                fields['alt'] = altitude
         for key, (_, group, field, scale, _) in LOG_FIELDS.items():
             value = row.get(group, {}).get(field)
             if scale is None:

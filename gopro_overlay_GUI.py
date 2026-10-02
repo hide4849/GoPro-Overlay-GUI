@@ -33,7 +33,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from dashboard_adapter import run_dashboard
-from dji_flightlog import LOG_FIELDS, DEFAULT_LOG_FIELDS, FlightLog
+from dji_flightlog import LOG_FIELDS, FlightLog
 from dji_hud import DJI_ITEMS, create_hud_widget
 
 # ============================================================
@@ -42,7 +42,7 @@ from dji_hud import DJI_ITEMS, create_hud_widget
 #   Mode B: Batch Overlay (.mp4 + .360 pair -> extract GPMD -> attach -> overlay)
 # ============================================================
 
-APP_VERSION = "1.14"
+APP_VERSION = "1.34"
 APP_TITLE = f"GoPro Overlay GUI Tool v{APP_VERSION}"
 DEFAULT_WIDTH_2K = 1920
 
@@ -894,19 +894,14 @@ class App(TkinterDnD.Tk):
         )
         self.selected_timezone = "Asia/Tokyo"
         self.overlay_component_vars = {
-            name: tk.BooleanVar(value=name not in LOG_FIELDS or name in DEFAULT_LOG_FIELDS)
+            name: tk.BooleanVar(value=True)
             for name, _ in OVERLAY_COMPONENTS
         }
         self.selected_overlay_components = [name for name, _ in OVERLAY_COMPONENTS]
-        self.dji_home_var = tk.StringVar(value="")
         self.selected_dji_home = None
-        decoded = Path(sys.executable if getattr(sys, "frozen", False) else __file__).with_name("flightrecord-decoded.json")
-        self.dji_log_var = tk.StringVar(value=str(decoded) if decoded.is_file() else "")
-        self.dji_video_start_var = tk.StringVar(value="")
         self.selected_dji_log = None
-        self.selected_dji_video_start = None
-        self.dji_stick_mode_var = tk.StringVar(value="2")
-        self.selected_dji_stick_mode = 2
+        self.dji_sdk_key_var = tk.StringVar(value="")
+        self.selected_dji_sdk_key = ""
         self.fallback_gpx_var = tk.StringVar(value="")
         self.selected_fallback_gpx: Path | None = None
 
@@ -918,7 +913,7 @@ class App(TkinterDnD.Tk):
         self.concat_files_info = tk.StringVar(value="Files: 0")
 
         # Concat-only: Timelapse
-        self.timelapse_var = tk.StringVar(value="1")  # x1 / x5 / x10
+        self.timelapse_var = tk.StringVar(value="10")  # x1 / x5 / x10
 
 
         # Cleanup intermediate files
@@ -978,7 +973,7 @@ class App(TkinterDnD.Tk):
         self.out_dir_entry = ttk.Entry(output_row, textvariable=self.out_dir, width=76)
         self.out_dir_entry.grid(row=0, column=1, padx=6)
         self.out_dir_button = ttk.Button(output_row, text="Browse", command=self.browse_out)
-        self.out_dir_button.grid(row=1, column=1, sticky="w", padx=6, pady=(5, 0))
+        self.out_dir_button.grid(row=0, column=2, sticky="w", padx=6)
         ttk.Checkbutton(
             output_row,
             text="Save in input file folder",
@@ -992,16 +987,17 @@ class App(TkinterDnD.Tk):
         mid = ttk.Frame(self)
         mid.pack(fill="both", expand=True, padx=10, pady=10)
 
-        mid.columnconfigure(0, weight=1, minsize=540)
+        mid.columnconfigure(0, weight=0)
         mid.columnconfigure(1, weight=1, minsize=360)
 
         mid.rowconfigure(0, weight=1)
 
         left_host = ttk.Frame(mid)
-        left_host.grid(row=0, column=0, sticky="nsew")
-        options_canvas = tk.Canvas(left_host, width=540, highlightthickness=0)
+        left_host.grid(row=0, column=0, sticky="nsw")
+        options_canvas = tk.Canvas(left_host, width=700, highlightthickness=0)
+        self.options_canvas = options_canvas
         options_scroll = ttk.Scrollbar(left_host, orient="vertical", command=options_canvas.yview)
-        options_scroll.pack(side="right", fill="y")
+        options_scroll.pack(side="right", fill="y", padx=(8, 0))
         options_canvas.pack(side="left", fill="both", expand=True)
         options_canvas.configure(yscrollcommand=options_scroll.set)
         left = ttk.Frame(options_canvas)
@@ -1021,8 +1017,10 @@ class App(TkinterDnD.Tk):
 
 
         # ---- LEFT: Mode + Shared Options ----
-        mode_box = ttk.LabelFrame(left, text="Mode")
-        mode_box.pack(anchor="w", pady=(0, 8))
+        settings_header = ttk.Frame(left)
+        settings_header.pack(anchor="w", fill="x", pady=(0, 8))
+        mode_box = ttk.LabelFrame(settings_header, text="Mode")
+        mode_box.grid(row=0, column=0, sticky="nw", padx=(0, 10))
 
         self.mode_buttons = []
         for index, (value, label) in enumerate((
@@ -1033,31 +1031,31 @@ class App(TkinterDnD.Tk):
         )):
             button = ttk.Radiobutton(mode_box, text=label, variable=self.mode_var, value=value)
             self.mode_buttons.append(button)
-            button.grid(row=index // 2, column=index % 2,
+            button.grid(row=index, column=0,
                                               sticky="w", padx=10, pady=4)
 
-        opts_row = ttk.Frame(left)
-        opts_row.pack(anchor="w", pady=(0, 8))
+        opts_row = ttk.Frame(settings_header)
+        opts_row.grid(row=0, column=1, sticky="nw")
 
         # Encoder
         enc = ttk.LabelFrame(opts_row, text="Encoder")
         enc.grid(row=0, column=0, sticky="nw", padx=(0, 10))
 
         rb_cpu = ttk.Radiobutton(enc, text="Software", variable=self.encoder_var, value="cpu")
-        rb_cpu.pack(anchor="w", padx=10, pady=2)
+        rb_cpu.pack(anchor="w", padx=10, pady=4)
 
         if IS_MAC:
             rb_vt = ttk.Radiobutton(enc, text="Apple HW (VideoToolbox)", variable=self.encoder_var, value="vt")
-            rb_vt.pack(anchor="w", padx=10, pady=2)
+            rb_vt.pack(anchor="w", padx=10, pady=4)
             if not self.av_vt:
                 rb_vt.state(["disabled"])
         else:
             rb_amf = ttk.Radiobutton(enc, text="AMD Radeon (AMF)", variable=self.encoder_var, value="amf")
             rb_qsv = ttk.Radiobutton(enc, text="Intel QSV", variable=self.encoder_var, value="qsv")
             rb_nv  = ttk.Radiobutton(enc, text="nVIDIA NVENC", variable=self.encoder_var, value="nvenc")
-            rb_amf.pack(anchor="w", padx=10, pady=2)
-            rb_qsv.pack(anchor="w", padx=10, pady=2)
-            rb_nv.pack(anchor="w", padx=10, pady=2)
+            rb_amf.pack(anchor="w", padx=10, pady=4)
+            rb_qsv.pack(anchor="w", padx=10, pady=4)
+            rb_nv.pack(anchor="w", padx=10, pady=4)
 
             if not self.av_amf:
                 rb_amf.state(["disabled"])
@@ -1067,59 +1065,44 @@ class App(TkinterDnD.Tk):
                 rb_nv.state(["disabled"])
 
         # Resolution
-        res = ttk.LabelFrame(opts_row, text="Output Resolution")
-        res.grid(row=0, column=1, sticky="nw", padx=(0, 10))
+        resolution_column = ttk.Frame(opts_row)
+        resolution_column.grid(row=0, column=1, sticky="nsew")
+        res = ttk.LabelFrame(resolution_column, text="Output Resolution")
+        res.pack(fill="x")
+        self.resolution_box = res
+        self.controls_left = left
+        res.bind("<Configure>", lambda event: self.after_idle(self._fit_setting_frames))
 
         ttk.Radiobutton(
             res,
             text="Original (No Transcode)",
             variable=self.resolution_var,
             value="original",
-        ).pack(anchor="w", padx=10, pady=2)
+        ).pack(anchor="w", padx=10, pady=4)
 
         ttk.Radiobutton(
             res,
             text="2K (1920x1080)",
             variable=self.resolution_var,
             value="2k",
-        ).pack(anchor="w", padx=10, pady=2)
+        ).pack(anchor="w", padx=10, pady=4)
 
         # Timelapse (Concat/Batch 共通)
-        self.tl_box = ttk.LabelFrame(opts_row, text="Timelapse")
-        self.tl_box.grid(row=0, column=2, sticky="nw")
+        self.tl_box = ttk.LabelFrame(resolution_column, text="Timelapse")
+        self.tl_box.pack(fill="both", expand=True, pady=(8, 0))
 
         rb_tl1 = ttk.Radiobutton(self.tl_box, text="x1", variable=self.timelapse_var, value="1")
         rb_tl5 = ttk.Radiobutton(self.tl_box, text="x5",        variable=self.timelapse_var, value="5")
         rb_tl10 = ttk.Radiobutton(self.tl_box, text="x10",      variable=self.timelapse_var, value="10")
-        rb_tl1.pack(anchor="w", padx=10, pady=2)
-        rb_tl5.pack(anchor="w", padx=10, pady=2)
-        rb_tl10.pack(anchor="w", padx=10, pady=2)
+        rb_tl1.pack(side="left", anchor="s", padx=6, pady=4)
+        rb_tl5.pack(side="left", anchor="s", padx=6, pady=4)
+        rb_tl10.pack(side="left", anchor="s", padx=6, pady=4)
 
         self.tl_rbs = [rb_tl1, rb_tl5, rb_tl10]
 
-        # Timezone used by the date/time overlay. Editable for any IANA name.
-        timezone_box = ttk.LabelFrame(left, text="Overlay Timezone")
-        timezone_box.pack(anchor="w", fill="x", pady=(0, 8))
-        ttk.Label(timezone_box, text="Timezone:").grid(
-            row=0, column=0, padx=(10, 4), pady=(5, 2), sticky="w"
-        )
-        self.timezone_combo = ttk.Combobox(
-            timezone_box,
-            textvariable=self.timezone_var,
-            values=TIMEZONE_CHOICES,
-            width=28,
-        )
-        self.timezone_combo.grid(
-            row=0, column=1, padx=(0, 10), pady=(5, 2), sticky="w"
-        )
-        ttk.Label(
-            timezone_box,
-            textvariable=self.timezone_offset_var,
-        ).grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
-
         overlay_box = ttk.LabelFrame(left, text="Overlay Items")
         self.overlay_box = overlay_box
-        overlay_box.pack(anchor="w", fill="x", pady=(0, 8))
+        overlay_box.pack(anchor="w", pady=(0, 8))
         self.overlay_checkbuttons = {}
         for index, (name, label) in enumerate(OVERLAY_COMPONENTS):
             checkbox = ttk.Checkbutton(
@@ -1136,30 +1119,42 @@ class App(TkinterDnD.Tk):
                 sticky="w",
             )
 
-        dji_box = ttk.LabelFrame(left, text="DJI Flight Log / SRT")
+        details_row = ttk.Frame(left)
+        details_row.pack(anchor="w", pady=(0, 8))
+        details_row.columnconfigure(1, weight=1)
+        self.details_row = details_row
+        # Timezone used by the date/time overlay. Editable for any IANA name.
+        timezone_box = ttk.LabelFrame(details_row, text="タイムゾーン")
+        timezone_box.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.timezone_box = timezone_box
+        self.timezone_combo = ttk.Combobox(
+            timezone_box,
+            textvariable=self.timezone_var,
+            values=TIMEZONE_CHOICES,
+            width=16,
+        )
+        self.timezone_combo.grid(
+            row=0, column=0, padx=10, pady=(5, 2), sticky="w"
+        )
+        ttk.Label(
+            timezone_box,
+            textvariable=self.timezone_offset_var,
+        ).grid(row=1, column=0, padx=10, pady=(0, 5), sticky="w")
+
+        dji_box = ttk.LabelFrame(details_row, text="DJI Flight Log / SRT")
         self.dji_box = dji_box
-        dji_box.pack(anchor="w", fill="x", pady=(0, 8))
-        ttk.Label(dji_box, text="Decoded flight log (.json):").grid(row=0, column=0, padx=8, pady=4, sticky="w")
-        ttk.Entry(dji_box, textvariable=self.dji_log_var, width=50).grid(row=0, column=1, sticky="ew")
-        ttk.Button(dji_box, text="Browse", command=self.browse_dji_log).grid(row=0, column=2, padx=6)
-        ttk.Button(dji_box, text="Clear", command=lambda: self.dji_log_var.set("")).grid(row=0, column=3, padx=6)
-        ttk.Label(dji_box, text="Video start (flight elapsed seconds):").grid(row=1, column=0, padx=8, pady=4, sticky="w")
-        ttk.Entry(dji_box, textvariable=self.dji_video_start_var, width=16).grid(row=1, column=1, sticky="w")
-        ttk.Label(dji_box, text="Blank = sync with matching SRT; without SRT, enter seconds.").grid(row=2, column=0, columnspan=4, padx=8, sticky="w")
-        ttk.Label(dji_box, text="Home lat,lon (optional override):").grid(row=3, column=0, padx=8, pady=4, sticky="w")
-        ttk.Entry(dji_box, textvariable=self.dji_home_var, width=30).grid(row=3, column=1, sticky="w")
-        ttk.Button(dji_box, text="Recommended HUD", command=self.dji_recommended_hud).grid(row=3, column=2, columnspan=2, padx=6)
-        ttk.Label(dji_box, text="スティック配置（送信機と合わせる）:").grid(row=4, column=0, padx=8, pady=4, sticky="w")
-        ttk.Combobox(dji_box, textvariable=self.dji_stick_mode_var, values=("1", "2", "3"), state="readonly", width=5).grid(row=4, column=1, sticky="w")
+        dji_box.grid(row=0, column=1, sticky="nsew")
+        ttk.Label(dji_box, text="DJI SDK Key（初回復号用）:").grid(row=0, column=0, columnspan=2, padx=8, pady=4, sticky="w")
+        ttk.Entry(dji_box, textvariable=self.dji_sdk_key_var, show="*", width=26).grid(row=1, column=0, columnspan=2, padx=8, pady=(0, 6), sticky="ew")
         dji_box.columnconfigure(1, weight=1)
-        fallback_box = ttk.LabelFrame(left, text="GPS Logger Fallback")
+        fallback_box = ttk.LabelFrame(details_row, text="GPS Logger Fallback")
         self.fallback_box = fallback_box
-        fallback_box.pack(anchor="w", fill="x", pady=(0, 8))
+        fallback_box.grid(row=0, column=1, sticky="nsew")
         ttk.Label(fallback_box, text="GPX file:").grid(
             row=0, column=0, padx=(10, 4), pady=5, sticky="w"
         )
         ttk.Entry(
-            fallback_box, textvariable=self.fallback_gpx_var, width=54
+            fallback_box, textvariable=self.fallback_gpx_var, width=18
         ).grid(row=0, column=1, padx=(0, 4), pady=5, sticky="ew")
         fallback_buttons = ttk.Frame(fallback_box)
         fallback_buttons.grid(row=1, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
@@ -1169,11 +1164,14 @@ class App(TkinterDnD.Tk):
         ttk.Button(
             fallback_buttons, text="Clear", command=lambda: self.fallback_gpx_var.set("")
         ).pack(side="left")
-        ttk.Label(
-            fallback_box,
-            text="Used only when GoPro GPS is invalid (maximum interpolation gap: 60 s)",
-        ).grid(row=2, column=1, padx=(0, 10), pady=(0, 5), sticky="w")
         fallback_box.columnconfigure(1, weight=1)
+
+        start_bar = ttk.Frame(left)
+        start_bar.pack(anchor="w", pady=(12, 0))
+        self.start_button = ttk.Button(start_bar, text="Start", command=self.start)
+        self.start_button.pack(anchor="w")
+        self.concat_start_btn = self.batch_start_btn = self.overlay_start_btn = self.dji_start_btn = self.start_button
+        self._locked_settings = None
 
         # ---- STACK AREA (mode-specific UI) ----
         self.telemetry_options_anchor.pack(fill="x")
@@ -1204,8 +1202,6 @@ class App(TkinterDnD.Tk):
 
         ttk.Button(btns, text="Add MP4", command=self.concat_add_files_dialog).pack(side="left")
         ttk.Button(btns, text="Load File List", command=self.concat_load_file_list_dialog).pack(side="left", padx=(6, 0))
-        self.concat_start_btn = ttk.Button(btns, text="Start", command=self.start)
-        self.concat_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.concat_clear_files).pack(side="left")
 
         ttk.Checkbutton(btns, text="Delete Temp Files", variable=self.cleanup_var).pack(side="left", padx=10)
@@ -1227,8 +1223,6 @@ class App(TkinterDnD.Tk):
         btns.pack(fill="x", pady=(0, 6))
 
         ttk.Button(btns, text="Add .mp4 / .360", command=self.batch_add_files_dialog).pack(side="left")
-        self.batch_start_btn = ttk.Button(btns, text="Start", command=self.start)
-        self.batch_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.batch_clear_files).pack(side="left")
 
         ttk.Checkbutton(btns, text="Delete Temp Files", variable=self.cleanup_var).pack(side="left", padx=10)
@@ -1252,8 +1246,6 @@ class App(TkinterDnD.Tk):
         btns.pack(fill="x", pady=(0, 6))
 
         ttk.Button(btns, text="Add MP4", command=self.overlay_add_files_dialog).pack(side="left")
-        self.overlay_start_btn = ttk.Button(btns, text="Start", command=self.start)
-        self.overlay_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.overlay_clear_files).pack(side="left")
 
         ttk.Label(parent, textvariable=self.overlay_files_info).pack(anchor="w")
@@ -1274,9 +1266,8 @@ class App(TkinterDnD.Tk):
         btns.pack(fill="x", pady=(0, 6))
 
         ttk.Button(btns, text="Add MP4 / SRT", command=self.dji_add_files_dialog).pack(side="left")
-        self.dji_start_btn = ttk.Button(btns, text="Start", command=self.start)
-        self.dji_start_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Clear", command=self.dji_clear_files).pack(side="left")
+        ttk.Checkbutton(btns, text="Delete Temp Files", variable=self.cleanup_var).pack(side="left", padx=10)
 
         ttk.Label(parent, textvariable=self.dji_files_info).pack(anchor="w")
 
@@ -1293,13 +1284,10 @@ class App(TkinterDnD.Tk):
     # ---------- Mode switch ----------
     def _switch_mode(self):
         mode = self.mode_var.get()
-        if mode == "dji" and not getattr(self, "_dji_profile_initialized", False):
-            self.dji_recommended_hud()
-            self._dji_profile_initialized = True
-        self.dji_box.pack_forget()
-        self.fallback_box.pack_forget()
+        self.dji_box.grid_remove()
+        self.fallback_box.grid_remove()
         box = self.dji_box if mode == "dji" else self.fallback_box
-        box.pack(before=self.telemetry_options_anchor, anchor="w", fill="x", pady=(0, 8))
+        box.grid(row=0, column=1, sticky="new")
         visible_index = 0
         for name, checkbox in self.overlay_checkbuttons.items():
             english_label = dict(OVERLAY_COMPONENTS)[name]
@@ -1325,6 +1313,28 @@ class App(TkinterDnD.Tk):
         else:
             self.overlay_frame.tkraise()
             self.overlay_start_btn.config(text="Start", command=self.start)
+
+        self.after_idle(self._fit_setting_frames)
+
+    def _fit_setting_frames(self):
+        if not hasattr(self, "details_row"):
+            return
+        res = self.resolution_box
+        width = res.winfo_rootx() - self.controls_left.winfo_rootx() + res.winfo_width()
+        if width < 100:
+            return
+        self.options_canvas.configure(width=width)
+        rows = {}
+        for checkbox in self.overlay_checkbuttons.values():
+            position = checkbox.grid_info()
+            if position:
+                row = int(position["row"])
+                rows[row] = max(rows.get(row, 0), checkbox.winfo_reqheight() + 4)
+        self.overlay_box.configure(width=width, height=sum(rows.values()) + 28)
+        self.overlay_box.grid_propagate(False)
+        active = self.dji_box if self.mode_var.get() == "dji" else self.fallback_box
+        self.details_row.configure(width=width, height=max(self.timezone_box.winfo_reqheight(), active.winfo_reqheight()))
+        self.details_row.grid_propagate(False)
 
     # ---------- Common UI helpers ----------
 
@@ -1562,9 +1572,30 @@ class App(TkinterDnD.Tk):
                 self.log(f"■ Delete failed: {p} ({e})")
 
 
+    def _lock_settings(self):
+        if self._locked_settings is not None:
+            return
+        self._locked_settings = []
+        def lock(parent):
+            for widget in parent.winfo_children():
+                if widget is self.start_button:
+                    continue
+                if isinstance(widget, (ttk.Button, ttk.Checkbutton, ttk.Radiobutton, ttk.Entry, ttk.Combobox, ttk.Spinbox)):
+                    self._locked_settings.append((widget, widget.state()))
+                    widget.state(["disabled"])
+                lock(widget)
+        lock(self)
+
+    def _unlock_settings(self):
+        if self._locked_settings is None:
+            return
+        for widget, state in self._locked_settings:
+            widget.state(["!disabled"])
+            widget.state(state)
+        self._locked_settings = None
+
     def _set_start_button_stop(self):
-        for button in self.mode_buttons:
-            button.state(["disabled"])
+        self._lock_settings()
         mode = self.mode_var.get()
         if mode == "concat":
             self.concat_start_btn.config(text="Stop", command=self.stop)
@@ -1576,8 +1607,7 @@ class App(TkinterDnD.Tk):
             self.overlay_start_btn.config(text="Stop", command=self.stop)
 
     def _set_start_button_start(self):
-        for button in self.mode_buttons:
-            button.state(["!disabled"])
+        self._unlock_settings()
         self.concat_start_btn.config(text="Start", command=self.start)
         self.batch_start_btn.config(text="Start", command=self.start)
         self.overlay_start_btn.config(text="Start", command=self.start)
@@ -1783,25 +1813,6 @@ class App(TkinterDnD.Tk):
                 self.overlay_tree.set(iid, "status", status)
         self.after(0, _update)
 
-    def browse_dji_log(self):
-        path = filedialog.askopenfilename(title="Select decoded DJI flight log", filetypes=[("Decoded flight log", "*.json")])
-        if path:
-            try:
-                FlightLog(path)
-            except (ValueError, OSError) as e:
-                messagebox.showerror("Invalid flight log", str(e))
-                return
-            self.dji_log_var.set(path)
-            self.dji_recommended_hud()
-            self.refresh_dji_list()
-
-    def dji_recommended_hud(self):
-        recommended = DEFAULT_LOG_FIELDS | {"date_and_time", "gps_info", "big_mph", "journey_map", "dji_home_distance"}
-        if not self.dji_log_var.get().strip():
-            recommended = {"date_and_time", "gps_info", "big_mph", "journey_map", "dji_log_alt", "dji_climb"}
-        for name, variable in self.overlay_component_vars.items():
-            variable.set(name in recommended)
-
     def dji_add_files_dialog(self):
         files = filedialog.askopenfilenames(
             title="Select DJI MP4 and SRT files",
@@ -1824,13 +1835,14 @@ class App(TkinterDnD.Tk):
         self.refresh_dji_list()
 
     def refresh_dji_list(self):
+        from dji_log_input import folder_txts
         from dji_telemetry import sidecar
         if not hasattr(self, "dji_tree"):
             return
         for item in self.dji_tree.get_children():
             self.dji_tree.delete(item)
         for idx, path in enumerate(self.dji_files):
-            self.dji_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready" if sidecar(path) or self.dji_log_var.get().strip() else "Needs SRT / log"))
+            self.dji_tree.insert("", "end", iid=str(idx), values=(str(path), "Ready" if sidecar(path) and folder_txts(path) else "SRT / TXTが必要"))
         self.dji_files_info.set(f"Files: {len(self.dji_files)}")
 
     def dji_delete_selected(self, event=None):
@@ -1899,37 +1911,17 @@ class App(TkinterDnD.Tk):
             )
             return
         self.selected_timezone = timezone_name
-        from dji_telemetry import parse_home
-        try:
-            self.selected_dji_home = parse_home(self.dji_home_var.get()) if mode == "dji" else None
-        except ValueError as e:
-            messagebox.showerror("Invalid DJI home", str(e))
-            return
+        self.selected_dji_home = None
 
         self.selected_dji_log = None
-        self.selected_dji_video_start = None
-        self.selected_dji_stick_mode = int(self.dji_stick_mode_var.get())
-        if mode == "dji":
-            try:
-                log_path = self.dji_log_var.get().strip()
-                if log_path:
-                    self.selected_dji_log = Path(log_path).expanduser().resolve()
-                    flight = FlightLog(self.selected_dji_log)
-                    offset_text = self.dji_video_start_var.get().strip()
-                    if offset_text:
-                        self.selected_dji_video_start = float(offset_text)
-                        flight.offset(elapsed=self.selected_dji_video_start)
-            except (ValueError, OSError) as e:
-                messagebox.showerror("Invalid DJI flight log / video start", str(e))
-                return
-
+        self.selected_dji_sdk_key = self.dji_sdk_key_var.get().strip()
         selected_components = [
             name
             for name, _ in OVERLAY_COMPONENTS
             if self.overlay_component_vars[name].get()
             and (mode == "dji" or not name.startswith("dji_"))
             and (mode != "dji" or name not in ("gps-lock", "gps_dop"))
-            and (name not in LOG_FIELDS or self.selected_dji_log or name in ("dji_log_alt", "dji_climb"))
+            and (name not in LOG_FIELDS or mode == "dji")
         ]
         if not selected_components:
             messagebox.showwarning(
@@ -2000,16 +1992,13 @@ class App(TkinterDnD.Tk):
                 self._set_start_button_start()
                 return
             if mode == "dji":
+                from dji_log_input import folder_txts
                 from dji_telemetry import sidecar
-                missing = [p.name for p in files_snapshot if sidecar(p) is None]
-                if missing and (not self.selected_dji_log or self.selected_dji_video_start is None):
-                    messagebox.showerror("Missing SRT / video start", "同名のSRTがない場合は、復号済みJSONと動画開始時の飛行経過秒数を指定してください。\n" + "\n".join(missing))
+                missing = [p.name for p in files_snapshot if sidecar(p) is None or not folder_txts(p)]
+                if missing:
+                    messagebox.showerror("SRT / TXTが必要", "各MP4と同じフォルダに同名SRTと飛行ログTXTを置いてください。\n" + "\n".join(missing))
                     self._set_start_button_start()
                     return
-            if mode == "dji" and self.selected_dji_log and self.selected_dji_video_start is not None and len(files_snapshot) != 1:
-                messagebox.showerror("Video start", "開始秒数を手入力する場合は動画を1本ずつ処理してください。")
-                self._set_start_button_start()
-                return
             self.worker_thread = threading.Thread(
                 target=self.worker_dji if mode == "dji" else self.worker_overlay,
                 args=(files_snapshot, out_dir, save_with_input),
@@ -2248,6 +2237,10 @@ class App(TkinterDnD.Tk):
                 self.dji_set_row_status(row_i, "Processing")
                 try:
                     file_out_dir = mp4.parent if save_with_input else out_dir
+                    from dji_log_input import select_txt, decode_log
+                    raw_log = select_txt(mp4, self.selected_timezone)
+                    self.log(f"飛行ログTXT: {raw_log.name}")
+                    self.selected_dji_log = decode_log(raw_log, self.selected_dji_sdk_key)
                     self.process_overlay_file(mp4, file_out_dir, dji_enabled=True)
                     self.dji_set_row_status(row_i, "Finish")
                 except Exception:
@@ -2257,6 +2250,7 @@ class App(TkinterDnD.Tk):
         except Exception as e:
             self.log(f"\nFATAL ERROR: {e}")
         finally:
+            self.selected_dji_sdk_key = ""
             self._set_start_button_start()
             self.current_proc = None
             self.stop_event.clear()
@@ -2318,7 +2312,7 @@ class App(TkinterDnD.Tk):
             subtitle = sidecar(mp4)
             srt = load_srt(subtitle, self.selected_timezone) if subtitle else None
             checked = load_flight_video(self.selected_dji_log, duration, srt,
-                                        self.selected_dji_video_start, self.selected_dji_home)
+                                        None, self.selected_dji_home)
             blank_count = sum(e.dji_battery is None for e in checked.frames.values())
             if blank_count:
                 self.log("飛行ログがない冒頭・末尾の短い区間は、ログの値を空欄にして出力します。")
@@ -2348,13 +2342,12 @@ class App(TkinterDnD.Tk):
             dji_home=self.selected_dji_home,
             dji_enabled=dji_enabled,
             dji_flight_log=self.selected_dji_log if dji_enabled else None,
-            dji_video_start=self.selected_dji_video_start if dji_enabled else None,
-            dji_stick_mode=self.selected_dji_stick_mode,
+            dji_stick_mode=2,
         )
         self.log(f"■ Overlay Finish: {out_mp4}")
         self.apply_timelapse(out_mp4, out_dir, stem)
 
-        if proxy_mp4.exists():
+        if proxy_mp4.exists() and (not dji_enabled or self.cleanup_var.get()):
             self._cleanup_paths([proxy_mp4])
 
     # ============================================================
